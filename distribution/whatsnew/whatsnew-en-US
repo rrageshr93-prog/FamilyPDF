@@ -7,3 +7,4 @@ Build flavor implementation for dual-store deployment
 • Improved deployment workflow with better error handling
 • Fixed scrolling bug on first page when zoomed in.
 • Added "Print" feature to PDF viewer menu.
+• Improved memory handling for large PDFs and background operations.
