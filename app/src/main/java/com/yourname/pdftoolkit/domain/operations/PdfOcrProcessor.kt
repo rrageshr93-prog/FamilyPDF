@@ -16,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -104,6 +105,11 @@ data class SearchablePdfResult(
 class PdfOcrProcessor(private val context: Context) {
     
     private val ocrEngine = OcrEngine(context)
+    private companion object {
+        private const val DEFAULT_OCR_DPI = 200f
+        private const val MAX_OCR_PIXELS = 4_000_000 // ~4MP per page
+        private const val OCR_CHUNK_SIZE = 3
+    }
     
     /**
      * Extract text from a PDF using OCR.
@@ -159,7 +165,7 @@ class PdfOcrProcessor(private val context: Context) {
                 ensureActive()
 
                 // Render page to image
-                val dpi = 200f // Good balance of quality and speed
+                val dpi = getSafeOcrDpi(document.getPage(pageIndex).mediaBox.width, document.getPage(pageIndex).mediaBox.height)
                 val pageImage = renderer.renderImageWithDPI(pageIndex, dpi)
                 
                 try {
@@ -187,6 +193,9 @@ class PdfOcrProcessor(private val context: Context) {
                 
                 val progress = 10 + ((index + 1) * 85 / validPages.size)
                 progressCallback(progress)
+                if ((index + 1) % OCR_CHUNK_SIZE == 0) {
+                    yield()
+                }
             }
             
             document.close()
@@ -271,7 +280,7 @@ class PdfOcrProcessor(private val context: Context) {
                 val page = document.getPage(pageIndex)
                 
                 // Render page to image for OCR
-                val dpi = 200f
+                val dpi = getSafeOcrDpi(page.mediaBox.width, page.mediaBox.height)
                 val pageImage = renderer.renderImageWithDPI(pageIndex, dpi)
                 
                 try {
@@ -289,6 +298,9 @@ class PdfOcrProcessor(private val context: Context) {
                 
                 val progress = 10 + ((pageIndex + 1) * 80 / totalPages)
                 progressCallback(progress)
+                if ((pageIndex + 1) % OCR_CHUNK_SIZE == 0) {
+                    yield()
+                }
             }
             
             progressCallback(90)
@@ -337,8 +349,19 @@ class PdfOcrProcessor(private val context: Context) {
     ): String = withContext(Dispatchers.IO) {
         try {
             ensureActive()
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(imageUri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, options)
+            } ?: return@withContext ""
+
+            val sampleSize = calculateInSampleSize(options.outWidth, options.outHeight, MAX_OCR_PIXELS)
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+
             val bitmap = context.contentResolver.openInputStream(imageUri)?.use {
-                BitmapFactory.decodeStream(it)
+                BitmapFactory.decodeStream(it, null, decodeOptions)
             } ?: return@withContext ""
             
             ensureActive()
@@ -357,6 +380,23 @@ class PdfOcrProcessor(private val context: Context) {
     private suspend fun performOcrOnBitmap(bitmap: Bitmap): String {
         ocrEngine.initialize()
         return ocrEngine.recognizeText(bitmap)
+    }
+
+    private fun getSafeOcrDpi(pageWidthPoints: Float, pageHeightPoints: Float): Float {
+        val targetPixelsAtDefault = ((pageWidthPoints * DEFAULT_OCR_DPI / 72f) * (pageHeightPoints * DEFAULT_OCR_DPI / 72f)).toInt()
+        if (targetPixelsAtDefault <= MAX_OCR_PIXELS) return DEFAULT_OCR_DPI
+
+        val scale = kotlin.math.sqrt(MAX_OCR_PIXELS.toFloat() / targetPixelsAtDefault.toFloat())
+        return (DEFAULT_OCR_DPI * scale).coerceIn(120f, DEFAULT_OCR_DPI)
+    }
+
+    private fun calculateInSampleSize(width: Int, height: Int, maxPixels: Int): Int {
+        if (width <= 0 || height <= 0) return 1
+        var sample = 1
+        while ((width / sample) * (height / sample) > maxPixels) {
+            sample *= 2
+        }
+        return sample.coerceAtLeast(1)
     }
     
     /**

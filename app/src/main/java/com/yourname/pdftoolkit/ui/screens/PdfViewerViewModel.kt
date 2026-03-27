@@ -252,17 +252,14 @@ class PdfViewerViewModel : ViewModel() {
 
     // Bitmap cache for rendered pages
     private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-    private val cacheSize = maxMemory / 8
+    private val cacheSize = maxMemory / 12
     private val bitmapCache = object : LruCache<Int, Bitmap>(cacheSize) {
         override fun sizeOf(key: Int, bitmap: Bitmap): Int {
             return bitmap.byteCount / 1024
         }
         
-        override fun entryRemoved(evicted: Boolean, key: Int, oldValue: Bitmap, newValue: Bitmap?) {
-            if (evicted) {
-                oldValue.recycle()
-            }
-        }
+        // Do not recycle on eviction. Compose may still hold a reference briefly,
+        // and recycling here can trigger BaseCanvas.throwIfCannotDraw.
     }
     
     private var prefetchJob: Job? = null
@@ -668,6 +665,7 @@ class PdfViewerViewModel : ViewModel() {
                 document = null
                 pdfRenderer = null
                 extractedTextCache.clear()
+                bitmapCache.evictAll()
 
                 // Clean up temp file
                 try {

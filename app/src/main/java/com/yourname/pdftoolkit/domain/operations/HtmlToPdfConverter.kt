@@ -9,6 +9,7 @@ import android.webkit.WebViewClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.OutputStream
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -243,7 +244,7 @@ class HtmlToPdfConverter {
         return try {
             withContext(Dispatchers.Main) {
                 // Calculate dimensions - use higher resolution for better quality
-                val scale = 2.0f
+                val scale = 1.5f
                 val widthPx = (pageWidth * scale).toInt()
                 val heightPx = (pageHeight * scale).toInt()
                 
@@ -275,6 +276,7 @@ class HtmlToPdfConverter {
                 val pdfDocument = PdfDocument()
                 
                 for (pageNum in 0 until numPages) {
+                    yield()
                     val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum + 1).create()
                     val page = pdfDocument.startPage(pageInfo)
                     
@@ -292,6 +294,9 @@ class HtmlToPdfConverter {
                     pdfDocument.finishPage(page)
                     
                     onProgress(0.3f + (0.6f * (pageNum + 1) / numPages))
+                    if ((pageNum + 1) % 2 == 0) {
+                        kotlinx.coroutines.delay(16)
+                    }
                 }
                 
                 // Write to output stream on IO thread

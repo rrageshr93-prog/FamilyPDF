@@ -1177,7 +1177,7 @@ private fun PdfPageWithAnnotations(
                 .onSizeChanged { size = it }
                 .heightIn(min = 200.dp)
         ) {
-            if (bitmap != null) {
+            if (bitmap != null && !bitmap!!.isRecycled) {
                 // PDF page image
                 Image(
                     bitmap = bitmap!!.asImageBitmap(),
@@ -1200,7 +1200,7 @@ private fun PdfPageWithAnnotations(
             }
             
             // Search Highlights Overlay
-            if (pageMatches.isNotEmpty() && bitmap != null) {
+            if (pageMatches.isNotEmpty() && bitmap != null && !bitmap!!.isRecycled) {
                 Canvas(modifier = Modifier.matchParentSize()) {
                     pageMatches.forEachIndexed { index, match ->
                         val color = if (index == currentMatchIndexOnPage) {

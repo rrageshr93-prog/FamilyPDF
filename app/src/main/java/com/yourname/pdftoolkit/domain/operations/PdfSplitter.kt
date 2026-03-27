@@ -2,6 +2,7 @@ package com.yourname.pdftoolkit.domain.operations
 
 import android.content.Context
 import android.net.Uri
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import kotlinx.coroutines.Dispatchers
@@ -71,9 +72,14 @@ class PdfSplitter {
                 ?: return@withContext Result.failure(
                     IllegalStateException("Cannot open input file")
                 )
-            
-            document = PDDocument.load(inputStream)
-            val totalPages = document.numberOfPages
+
+            inputStream.use {
+                document = PDDocument.load(it, MemoryUsageSetting.setupTempFileOnly())
+            }
+            val loadedDocument = document ?: return@withContext Result.failure(
+                IllegalStateException("Failed to load input PDF")
+            )
+            val totalPages = loadedDocument.numberOfPages
             
             if (totalPages == 0) {
                 return@withContext Result.failure(
@@ -84,7 +90,7 @@ class PdfSplitter {
             for (pageIndex in 0 until totalPages) {
                 // Create new document with single page
                 PDDocument().use { newDoc ->
-                    val page = document.getPage(pageIndex)
+                    val page = loadedDocument.getPage(pageIndex)
                     newDoc.importPage(page)
                     
                     // Get output stream from callback and save
@@ -121,9 +127,14 @@ class PdfSplitter {
                 ?: return@withContext Result.failure(
                     IllegalStateException("Cannot open input file")
                 )
-            
-            document = PDDocument.load(inputStream)
-            val totalPages = document.numberOfPages
+
+            inputStream.use {
+                document = PDDocument.load(it, MemoryUsageSetting.setupTempFileOnly())
+            }
+            val loadedDocument = document ?: return@withContext Result.failure(
+                IllegalStateException("Failed to load input PDF")
+            )
+            val totalPages = loadedDocument.numberOfPages
             var totalPagesProcessed = 0
             
             ranges.forEachIndexed { rangeIndex, range ->
@@ -136,7 +147,7 @@ class PdfSplitter {
                 
                 PDDocument().use { newDoc ->
                     for (pageNum in range.start..range.end) {
-                        val page = document.getPage(pageNum - 1) // 0-indexed
+                        val page = loadedDocument.getPage(pageNum - 1) // 0-indexed
                         newDoc.importPage(page)
                         totalPagesProcessed++
                     }
@@ -173,9 +184,14 @@ class PdfSplitter {
                 ?: return@withContext Result.failure(
                     IllegalStateException("Cannot open input file")
                 )
-            
-            document = PDDocument.load(inputStream)
-            val totalPages = document.numberOfPages
+
+            inputStream.use {
+                document = PDDocument.load(it, MemoryUsageSetting.setupTempFileOnly())
+            }
+            val loadedDocument = document ?: return@withContext Result.failure(
+                IllegalStateException("Failed to load input PDF")
+            )
+            val totalPages = loadedDocument.numberOfPages
             
             // Validate page numbers
             val invalidPages = pageNumbers.filter { it < 1 || it > totalPages }
@@ -187,7 +203,7 @@ class PdfSplitter {
             
             PDDocument().use { newDoc ->
                 pageNumbers.forEachIndexed { index, pageNum ->
-                    val page = document.getPage(pageNum - 1) // 0-indexed
+                    val page = loadedDocument.getPage(pageNum - 1) // 0-indexed
                     newDoc.importPage(page)
                     onProgress((index + 1).toFloat() / pageNumbers.size)
                 }
@@ -213,7 +229,7 @@ class PdfSplitter {
     ): Int = withContext(Dispatchers.IO) {
         try {
             context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                PDDocument.load(inputStream).use { document ->
+                PDDocument.load(inputStream, MemoryUsageSetting.setupTempFileOnly()).use { document ->
                     document.numberOfPages
                 }
             } ?: 0
