@@ -3,6 +3,7 @@ package com.yourname.pdftoolkit
 import android.app.Application
 import android.util.Log
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.yourname.pdftoolkit.review.ReviewIntegration
 import com.yourname.pdftoolkit.util.CacheManager
 import com.yourname.pdftoolkit.util.ThemeManager
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +26,9 @@ class PdfToolkitApplication : Application() {
         
         // Initialize PdfBox-Android
         PDFBoxResourceLoader.init(applicationContext)
+        
+        // Initialize In-App Review system for session tracking
+        ReviewIntegration.initialize(this)
         
         // Initialize theme synchronously to avoid flicker
         runBlocking {
