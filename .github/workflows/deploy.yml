@@ -144,7 +144,7 @@ jobs:
         run: chmod +x gradlew
 
       # ════════════════════════════════════════════════════════════════════════════════
-      # 8. Build Release AAB
+      # 8. Build Release AAB and APKs
       # ════════════════════════════════════════════════════════════════════════════════
       - name: Build Release AAB
         env:
@@ -161,29 +161,51 @@ jobs:
             -PAPP_VERSION_CODE=${{ env.APP_VERSION_CODE }} \
             -PAPP_VERSION_NAME=${{ env.APP_VERSION_NAME }}
 
+      - name: Build Release APKs
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ANDROID_KEYSTORE_FILE: keystore.jks
+          APP_VERSION_CODE: ${{ env.APP_VERSION_CODE }}
+          APP_VERSION_NAME: ${{ env.APP_VERSION_NAME }}
+          CI: true
+        run: |
+          echo "Building APKs — versionCode=${{ env.APP_VERSION_CODE }}, versionName=${{ env.APP_VERSION_NAME }}"
+          ./gradlew assemblePlaystoreRelease \
+            -PAPP_VERSION_CODE=${{ env.APP_VERSION_CODE }} \
+            -PAPP_VERSION_NAME=${{ env.APP_VERSION_NAME }}
+
       # ════════════════════════════════════════════════════════════════════════════════
       # 9. Verify Build Outputs
       # ════════════════════════════════════════════════════════════════════════════════
       - name: Verify Build Outputs
         run: |
-          echo "=== AAB File ==="
+          echo "=== AAB Files ==="
           ls -lh app/build/outputs/bundle/playstoreRelease/*.aab
+          echo "=== APK Files ==="
+          ls -lh app/build/outputs/apk/playstore/release/*.apk || echo "No APK files found"
           echo "=== Mapping File ==="
-          ls -lh app/build/outputs/mapping/playstoreRelease/mapping.txt || echo "No mapping file found (minify may be disabled)"
-          echo "=== Native Debug Symbols ==="
-          ls -lh app/build/outputs/native-debug-symbols/playstoreRelease/native-debug-symbols.zip || echo "No native debug symbols zip found"
+          ls -lh app/build/outputs/mapping/playstoreRelease/mapping.txt || echo "No mapping file found"
           echo "=== Version ==="
           echo "versionCode: ${{ env.APP_VERSION_CODE }}"
           echo "versionName: ${{ env.APP_VERSION_NAME }}"
 
       # ════════════════════════════════════════════════════════════════════════════════
-      # 10. Upload AAB as build artifact (for debugging)
+      # 10. Upload AAB and APKs as build artifacts
       # ════════════════════════════════════════════════════════════════════════════════
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-aab-v${{ env.APP_VERSION_NAME }}
           path: app/build/outputs/bundle/playstoreRelease/app-playstoreRelease.aab
+          retention-days: 30
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apks-v${{ env.APP_VERSION_NAME }}
+          path: app/build/outputs/apk/playstore/release/*.apk
           retention-days: 30
 
       # ════════════════════════════════════════════════════════════════════════════════
@@ -297,7 +319,7 @@ jobs:
           echo "At least one deployment succeeded or was skipped"
 
       # ════════════════════════════════════════════════════════════════════════════════
-      # 14. Create GitHub Release
+      # 14. Create GitHub Release with APKs and AAB
       # ════════════════════════════════════════════════════════════════════════════════
       - name: Create GitHub Release
         if: success()
@@ -321,8 +343,13 @@ jobs:
             - Min SDK: 26 (Android 8.0)
             - Target SDK: 35 (Android 15)
             - Build Number: ${{ github.run_number }}
+            
+            ### Downloads
+            **APK Files** - For sideloading on Android devices
+            **AAB File** - Android App Bundle for app stores
           files: |
             app/build/outputs/bundle/playstoreRelease/*.aab
+            app/build/outputs/apk/playstore/release/*.apk
             app/build/outputs/mapping/playstoreRelease/mapping.txt
           draft: false
           prerelease: false
