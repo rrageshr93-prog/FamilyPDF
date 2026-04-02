@@ -16,12 +16,22 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="https://github.com/Karna14314/Pdf_Tools/stargazers">
-    <img src="https://img.shields.io/github/stars/Karna14314/Pdf_Tools?style=flat" alt="GitHub Stars">
+    <img src="https://img.shields.io/github/stars/Karna14314/Pdf_Tools?style=flat&color=yellow" alt="GitHub Stars">
+  </a>
+  <a href="https://github.com/Karna14314/Pdf_Tools/forks">
+    <img src="https://img.shields.io/github/forks/Karna14314/Pdf_Tools?style=flat&color=blue" alt="GitHub Forks">
+  </a>
+  <a href="https://github.com/Karna14314/Pdf_Tools/watchers">
+    <img src="https://img.shields.io/github/watchers/Karna14314/Pdf_Tools?style=flat&color=green" alt="GitHub Watchers">
+  </a>
+  <a href="https://github.com/Karna14314/Pdf_Tools/issues">
+    <img src="https://img.shields.io/github/issues/Karna14314/Pdf_Tools?style=flat&color=red" alt="GitHub Issues">
   </a>
   <a href="https://github.com/Karna14314/Pdf_Tools/releases">
     <img src="https://img.shields.io/github/v/release/Karna14314/Pdf_Tools?include_prereleases" alt="Latest Release">
   </a>
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?logo=android" alt="Platform">
+  <img src="https://img.shields.io/github/last-commit/Karna14314/Pdf_Tools?style=flat&color=orange" alt="Last Commit">
 </p>
 
 ---
@@ -34,7 +44,7 @@
   </a>
 </p>
 
-> **500+ installs** · Offline · Privacy-first · No account required
+> Offline · Privacy-first · No account required
 
 ---
 ## ✨ Features
