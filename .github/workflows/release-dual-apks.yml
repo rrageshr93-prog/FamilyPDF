@@ -245,11 +245,11 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.TAG_NAME }}
-          name: Release ${{ env.APP_VERSION_NAME }}
+          name: "📱 Dual APKs - Release ${{ env.APP_VERSION_NAME }}"
           body_path: release_notes.md
           files: |
-            app/build/outputs/apk/playstore/release/pdftoolkit-playstore-v${{ env.APP_VERSION_NAME }}.apk
-            app/build/outputs/apk/opensource/release/pdftoolkit-opensource-v${{ env.APP_VERSION_NAME }}.apk
+            app/build/outputs/apk/playstore/release/*.apk
+            app/build/outputs/apk/opensource/release/*.apk
           draft: false
           prerelease: false
         env:

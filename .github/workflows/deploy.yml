@@ -319,14 +319,15 @@ jobs:
           echo "At least one deployment succeeded or was skipped"
 
       # ════════════════════════════════════════════════════════════════════════════════
-      # 14. Create GitHub Release with APKs and AAB
+      # 14. Create GitHub Release with APKs and AAB (if not already created by dual-apks workflow)
       # ════════════════════════════════════════════════════════════════════════════════
       - name: Create GitHub Release
         if: success()
+        continue-on-error: true
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ env.APP_VERSION_NAME }}
-          name: Release v${{ env.APP_VERSION_NAME }}
+          name: "🚀 Deploy - Release v${{ env.APP_VERSION_NAME }}"
           body: |
             ## PDF Toolkit v${{ env.APP_VERSION_NAME }} (Build ${{ env.APP_VERSION_CODE }})
             
@@ -345,8 +346,10 @@ jobs:
             - Build Number: ${{ github.run_number }}
             
             ### Downloads
-            **APK Files** - For sideloading on Android devices
+            **APK Files** - For sideloading on Android devices  
             **AAB File** - Android App Bundle for app stores
+            
+            > ⚠️ For dual APK downloads (Play Store + Open Source variants), see the "📱 Dual APKs" release.
           files: |
             app/build/outputs/bundle/playstoreRelease/*.aab
             app/build/outputs/apk/playstore/release/*.apk

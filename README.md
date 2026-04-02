@@ -37,12 +37,6 @@
 > **500+ installs** · Offline · Privacy-first · No account required
 
 ---
-
-## � Screenshots
-<!-- Add screenshots here -->
-
----
-
 ## ✨ Features
 
 ### 📄 PDF Management
