@@ -4,6 +4,17 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.3.32) - leave empty to use VERSION file'
+        required: false
+        default: ''
+      force_build:
+        description: 'Force build even if tag exists'
+        required: false
+        default: false
+        type: boolean
 
 # Required permissions for the workflow
 permissions:
@@ -77,24 +88,35 @@ jobs:
       - name: Generate unique tag
         id: generate-tag
         run: |
-          # Only create releases with 'v' prefix from VERSION file
-          if [ -f VERSION ]; then
+          # Use manual input version if provided, otherwise use VERSION file
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [ -f VERSION ]; then
             VERSION=$(cat VERSION | tr -d '[:space:]')
-            TAG="v${VERSION}"
           else
             echo "No VERSION file found. Skipping release creation."
             echo "tag=" >> $GITHUB_OUTPUT
             exit 0
           fi
           
+          TAG="v${VERSION}"
+          FORCE_BUILD="${{ github.event.inputs.force_build }}"
+          
           # Check if tag already exists
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists. Skipping release."
-            echo "tag=" >> $GITHUB_OUTPUT
-            exit 0
+            if [ "$FORCE_BUILD" = "true" ]; then
+              echo "Tag $TAG exists but force_build is enabled. Adding commit SHA."
+              SHORT_SHA=$(git rev-parse --short HEAD)
+              TAG="${TAG}-${SHORT_SHA}"
+            else
+              echo "Tag $TAG already exists. Skipping release."
+              echo "tag=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
           fi
           
           echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Generated tag: $TAG"
       
       - name: Create GitHub Release
