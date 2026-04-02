@@ -98,6 +98,17 @@ android {
             buildConfigField("boolean", "HAS_OCR", "true")
             buildConfigField("boolean", "USE_MLKIT_OCR", "false")
         }
+        
+        create("opensource") {
+            dimension = "store"
+            // Open source flavor - no ads, no Firebase, no Play Services
+            // Uses Tesseract for OCR (fully open source)
+            buildConfigField("boolean", "HAS_OCR", "true")
+            buildConfigField("boolean", "USE_MLKIT_OCR", "false")
+            buildConfigField("boolean", "HAS_ADS", "false")
+            buildConfigField("boolean", "HAS_FIREBASE", "false")
+            buildConfigField("boolean", "HAS_PLAY_SERVICES", "false")
+        }
     }
 
     buildTypes {
@@ -175,13 +186,14 @@ android {
         }
     }
     
-    // Custom AAB naming with app name and version
+    // Custom APK naming with app name, version and flavor
     applicationVariants.all {
         val variant = this
         variant.outputs.all {
             val outputImpl = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
             if (variant.buildType.name == "release") {
-                outputImpl.outputFileName = "PDFToolkit-v${variant.versionName}-${variant.buildType.name}.apk"
+                val flavorName = variant.flavorName
+                outputImpl.outputFileName = "pdftoolkit-${flavorName}-v${variant.versionName}.apk"
             }
         }
     }
@@ -236,6 +248,9 @@ dependencies {
 
     // F-Droid: Tesseract (open source, larger APK but no runtime downloads)
     "fdroidImplementation"("com.rmtheis:tess-two:9.1.0")
+    
+    // Open Source: Tesseract (same as F-Droid, fully open source)
+    "opensourceImplementation"("com.rmtheis:tess-two:9.1.0")
     
     // Coil for image loading (Apache 2.0) - lightweight (~2MB)
     implementation("io.coil-kt:coil-compose:2.5.0")

@@ -149,7 +149,7 @@ jobs:
           
           echo "Created release: $TAG"
       
-      - name: Prune old releases (keep latest 5)
+      - name: Prune old releases (keep latest 3)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -164,18 +164,18 @@ jobs:
           
           echo "Total releases found: $TOTAL_RELEASES"
           
-          # Check if we have more than 5 releases
-          if [ $TOTAL_RELEASES -le 5 ]; then
+          # Check if we have more than 3 releases
+          if [ $TOTAL_RELEASES -le 3 ]; then
             echo "Only $TOTAL_RELEASES releases exist. No pruning needed (keeping all)."
             exit 0
           fi
           
           # Calculate how many to delete
-          TO_DELETE=$((TOTAL_RELEASES - 5))
-          echo "Will delete $TO_DELETE old releases (keeping latest 5)"
+          TO_DELETE=$((TOTAL_RELEASES - 3))
+          echo "Will delete $TO_DELETE old releases (keeping latest 3)"
           
-          # Delete old releases (skip first 5, delete the rest)
-          for ((i=5; i<$TOTAL_RELEASES; i++)); do
+          # Delete old releases (skip first 3, delete the rest)
+          for ((i=3; i<$TOTAL_RELEASES; i++)); do
             TAG="${RELEASE_ARRAY[$i]}"
             echo "Deleting release and tag: $TAG"
             
@@ -186,7 +186,7 @@ jobs:
             git push origin --delete "$TAG" || echo "Failed to delete tag $TAG from remote"
           done
           
-          echo "Pruning complete. Kept latest 5 releases."
+          echo "Pruning complete. Kept latest 3 releases."
       
       - name: Summary
         if: always()
@@ -194,5 +194,5 @@ jobs:
           echo "=== Release Management Summary ==="
           echo "Artifacts copied: ${{ steps.check-artifacts.outputs.artifacts_exist }}"
           echo "New tag created: ${{ steps.generate-tag.outputs.tag }}"
-          echo "Releases pruned: Old releases beyond the latest 5 were removed"
+          echo "Releases pruned: Old releases beyond the latest 3 were removed"
           echo "=================================="
