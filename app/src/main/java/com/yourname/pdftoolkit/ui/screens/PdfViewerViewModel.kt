@@ -9,7 +9,9 @@ import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.net.Uri
+import android.graphics.pdf.PdfRenderer
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.util.LruCache
 import androidx.compose.ui.geometry.Offset
@@ -254,6 +256,109 @@ class PdfViewerViewModel : ViewModel() {
      * Validates a bitmap for safe drawing operations.
      * @return true if bitmap is safe to use (non-null, not recycled, has dimensions)
      */
+    /**
+     * Renders a PDF page using PDFBox with fallback to Android native PdfRenderer.
+     * Detects corrupt bitmaps (all same color) and falls back to native renderer.
+     */
+    private fun PDFRenderer.renderImageWithFallback(pageIndex: Int, scale: Float, pdfFile: File?): Bitmap? {
+        val pdfBoxBitmap = try {
+            renderImage(pageIndex, scale)
+        } catch (e: Exception) {
+            Log.w("PdfViewerVM", "PDFBox render failed for page $pageIndex, falling back to native", e)
+            return renderWithNativePdfRenderer(pageIndex, scale, pdfFile)
+        }
+        
+        // Check if bitmap is corrupt (all pixels same color or empty)
+        if (isBitmapCorrupt(pdfBoxBitmap)) {
+            Log.w("PdfViewerVM", "PDFBox produced corrupt bitmap for page $pageIndex, using native fallback")
+            pdfBoxBitmap.recycle()
+            return renderWithNativePdfRenderer(pageIndex, scale, pdfFile)
+        }
+        
+        return pdfBoxBitmap
+    }
+    
+    /**
+     * Checks if a bitmap is corrupt (all pixels same color or mostly empty).
+     */
+    private fun isBitmapCorrupt(bitmap: Bitmap): Boolean {
+        if (bitmap.width <= 0 || bitmap.height <= 0) return true
+        
+        // Sample pixels to check for uniformity
+        val width = bitmap.width
+        val height = bitmap.height
+        val sampleSize = 10 // Check every 10th pixel
+        
+        var firstPixel: Int? = null
+        var uniformCount = 0
+        var totalSamples = 0
+        
+        for (y in 0 until height step sampleSize) {
+            for (x in 0 until width step sampleSize) {
+                val pixel = bitmap.getPixel(x, y)
+                if (firstPixel == null) {
+                    firstPixel = pixel
+                } else if (pixel == firstPixel) {
+                    uniformCount++
+                }
+                totalSamples++
+            }
+        }
+        
+        // If 95%+ of sampled pixels are the same color, consider it corrupt
+        return totalSamples > 0 && uniformCount.toFloat() / totalSamples > 0.95f
+    }
+    
+    /**
+     * Renders a PDF page using Android's native PdfRenderer.
+     */
+    private fun renderWithNativePdfRenderer(pageIndex: Int, scale: Float, pdfFile: File?): Bitmap? {
+        if (pdfFile == null || !pdfFile.exists()) {
+            Log.e("PdfViewerVM", "Cannot use native renderer: PDF file not available")
+            return null
+        }
+        
+        var pfd: ParcelFileDescriptor? = null
+        var renderer: PdfRenderer? = null
+        var page: PdfRenderer.Page? = null
+        
+        return try {
+            pfd = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
+            renderer = PdfRenderer(pfd)
+            
+            if (pageIndex >= renderer.pageCount) {
+                Log.e("PdfViewerVM", "Page index $pageIndex out of bounds for native renderer")
+                return null
+            }
+            
+            page = renderer.openPage(pageIndex)
+            
+            // Calculate dimensions based on scale (72 DPI base * scale)
+            val width = (page.width * scale).toInt()
+            val height = (page.height * scale).toInt()
+            
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            canvas.drawColor(android.graphics.Color.WHITE) // White background
+            
+            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            
+            Log.d("PdfViewerVM", "Native PdfRenderer successfully rendered page $pageIndex")
+            bitmap
+        } catch (e: Exception) {
+            Log.e("PdfViewerVM", "Native PdfRenderer failed for page $pageIndex", e)
+            null
+        } finally {
+            page?.close()
+            renderer?.close()
+            pfd?.close()
+        }
+    }
+
+    /**
+     * Validates a bitmap for safe drawing operations.
+     * @return true if bitmap is safe to use (non-null, not recycled, has dimensions)
+     */
     private fun isBitmapValid(bitmap: Bitmap?): Boolean {
         if (bitmap == null) return false
         if (bitmap.isRecycled) return false
@@ -328,18 +433,21 @@ class PdfViewerViewModel : ViewModel() {
 
                     ensureActive()
 
-                    // Memory optimization: limit max bitmap dimensions
+                    // Try PDFBox first, fall back to Android native PdfRenderer on failure
                     val bitmap = try {
-                        renderer.renderImage(pageIndex, scale)
+                        renderer.renderImageWithFallback(pageIndex, scale, tempFile)
                     } catch (e: OutOfMemoryError) {
                         Log.e("PdfViewerVM", "OOM rendering page $pageIndex at scale $scale, retrying with lower scale", e)
                         // Retry with lower scale to prevent crash
                         try {
-                            renderer.renderImage(pageIndex, scale * 0.5f)
+                            renderer.renderImageWithFallback(pageIndex, scale * 0.5f, tempFile)
                         } catch (e2: OutOfMemoryError) {
                             Log.e("PdfViewerVM", "OOM even at reduced scale for page $pageIndex", e2)
                             null
                         }
+                    } catch (e: Exception) {
+                        Log.e("PdfViewerVM", "Error rendering page $pageIndex with PDFBox, trying native fallback", e)
+                        renderWithNativePdfRenderer(pageIndex, scale, tempFile)
                     }
 
                     if (bitmap != null && isBitmapValid(bitmap)) {
@@ -388,7 +496,7 @@ class PdfViewerViewModel : ViewModel() {
                             }
 
                             try {
-                                pdfRenderer?.renderImage(page, RENDER_SCALE)?.let { bitmap ->
+                                pdfRenderer?.renderImageWithFallback(page, RENDER_SCALE, tempFile)?.let { bitmap ->
                                     if (isBitmapValid(bitmap)) {
                                         bitmapCache.put(page, bitmap)
                                     } else {
