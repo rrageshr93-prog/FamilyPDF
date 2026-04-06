@@ -99,7 +99,7 @@ sealed class PdfViewerUiState {
 class PdfViewerViewModel : ViewModel() {
 
     companion object {
-        const val RENDER_SCALE = 1.5f
+        const val RENDER_SCALE = 1.0f
     }
 
     private val _uiState = MutableStateFlow<PdfViewerUiState>(PdfViewerUiState.Idle)
@@ -122,6 +122,9 @@ class PdfViewerViewModel : ViewModel() {
 
     private val _annotations = MutableStateFlow<List<AnnotationStroke>>(emptyList())
     val annotations: StateFlow<List<AnnotationStroke>> = _annotations.asStateFlow()
+    
+    // Redo stack for undone annotations
+    private val redoStack = mutableListOf<AnnotationStroke>()
 
     // Document management
     private var document: PDDocument? = null
@@ -238,15 +241,30 @@ class PdfViewerViewModel : ViewModel() {
         val currentList = _annotations.value.toMutableList()
         currentList.add(stroke)
         _annotations.value = currentList
+        // Clear redo stack when new annotation is added
+        redoStack.clear()
     }
 
     fun undoAnnotation() {
         val currentList = _annotations.value.toMutableList()
         if (currentList.isNotEmpty()) {
-            currentList.removeAt(currentList.lastIndex)
+            val removed = currentList.removeAt(currentList.lastIndex)
+            _annotations.value = currentList
+            // Add to redo stack
+            redoStack.add(removed)
+        }
+    }
+    
+    fun redoAnnotation() {
+        if (redoStack.isNotEmpty()) {
+            val stroke = redoStack.removeAt(redoStack.lastIndex)
+            val currentList = _annotations.value.toMutableList()
+            currentList.add(stroke)
             _annotations.value = currentList
         }
     }
+    
+    fun canRedo(): Boolean = redoStack.isNotEmpty()
 
     fun clearAnnotations() {
         _annotations.value = emptyList()
@@ -470,7 +488,10 @@ class PdfViewerViewModel : ViewModel() {
 
         prefetchJob?.cancel()
         prefetchJob = viewModelScope.launch(Dispatchers.IO) {
-            val range = listOf(currentPage + 1, currentPage - 1)
+            val range = listOf(
+                currentPage + 1, currentPage + 2, currentPage + 3,  // Ahead pages
+                currentPage - 1, currentPage - 2                       // Behind pages
+            )
 
             for (page in range) {
                 if (page in 0 until totalPages) {

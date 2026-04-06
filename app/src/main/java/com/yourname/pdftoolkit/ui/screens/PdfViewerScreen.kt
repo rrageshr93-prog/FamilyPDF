@@ -108,8 +108,9 @@ fun PdfViewerScreen(
     }
     // Track scale separately for UI controls (zoom buttons, reset, etc.)
     var scale by remember { mutableFloatStateOf(1f) }
-    // Per-page horizontal pan - tracks offsetX for each page
-    var pagePanX by remember { mutableFloatStateOf(0f) }
+    // Per-page horizontal pan - tracks offsetX for each page individually
+    val pagePanMap = remember { mutableStateMapOf<Int, Float>() }
+    val currentPagePanX = pagePanMap[currentPage] ?: 0f
 
     // Password state
     var showPasswordDialog by remember { mutableStateOf(false) }
@@ -293,7 +294,7 @@ fun PdfViewerScreen(
                                 )
                                 if (totalPages > 0) {
                                     Text(
-                                        text = "Page $currentPage of $totalPages",
+                                        text = "Page $currentPage of $totalPages (${(scale * 100).toInt()}%)",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -362,14 +363,16 @@ fun PdfViewerScreen(
                             IconButton(onClick = {
                                 val newScale = (scale * 1.25f).coerceIn(1f, 5f)
                                 scale = newScale
-                                if (newScale <= 1f) pagePanX = 0f
+                                if (newScale <= 1f) pagePanMap[currentPage] = 0f
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }) {
                                 Icon(Icons.Default.ZoomIn, contentDescription = "Zoom In")
                             }
                             IconButton(onClick = {
                                 val newScale = (scale * 0.8f).coerceIn(1f, 5f)
                                 scale = newScale
-                                if (newScale <= 1f) pagePanX = 0f
+                                if (newScale <= 1f) pagePanMap[currentPage] = 0f
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }) {
                                 Icon(Icons.Default.ZoomOut, contentDescription = "Zoom Out")
                             }
@@ -418,7 +421,7 @@ fun PdfViewerScreen(
                                 onClick = {
                                     showMenu = false
                                     scale = 1f
-                                    pagePanX = 0f
+                                    pagePanMap.clear()
                                 }
                             )
                             if (annotations.isNotEmpty()) {
@@ -475,7 +478,9 @@ fun PdfViewerScreen(
                         onToolSelected = { viewModel.setAnnotationTool(it) },
                         onColorPickerClick = { showColorPicker = true },
                         onUndoClick = { viewModel.undoAnnotation() },
-                        canUndo = annotations.isNotEmpty()
+                        onRedoClick = { viewModel.redoAnnotation() },
+                        canUndo = annotations.isNotEmpty(),
+                        canRedo = viewModel.canRedo()
                     )
                 }
                 
@@ -555,7 +560,7 @@ fun PdfViewerScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
-                .pointerInput(toolState, selectedAnnotationTool, scale, pagePanX, viewportSize) {
+                .pointerInput(toolState, selectedAnnotationTool, scale, currentPagePanX, viewportSize, currentPage) {
                     // Enable controls toggle and double-tap zoom
                     // Disable gestures only when actively drawing (Edit + Tool)
                     val isDrawing = toolState is PdfTool.Edit && selectedAnnotationTool != AnnotationTool.NONE
@@ -571,10 +576,10 @@ fun PdfViewerScreen(
                                     // Zoom in towards tap point - adjust horizontal pan
                                     val centerX = viewportSize.width / 2f
                                     val focusX = tapOffset.x - centerX
-                                    pagePanX = -focusX * (newScale - 1f)
+                                    pagePanMap[currentPage] = -focusX * (newScale - 1f)
                                 } else {
                                     // Zoom out - reset pan
-                                    pagePanX = 0f
+                                    pagePanMap[currentPage] = 0f
                                 }
                                 scale = newScale
                             }
@@ -607,8 +612,9 @@ fun PdfViewerScreen(
                         loadPage = { viewModel.loadPage(it) },
                         scale = scale,
                         onScaleChange = { scale = it },
-                        pagePanX = pagePanX,
-                        onPagePanXChange = { pagePanX = it },
+                        pagePanX = currentPagePanX,
+                        onPagePanXChange = { pagePanMap[currentPage] = it },
+                        currentPage = currentPage,
                         listState = listState,
                         isEditMode = isEditMode,
                         selectedTool = selectedAnnotationTool,
@@ -670,6 +676,11 @@ fun PdfViewerScreen(
                  }
             }
         }
+    }
+
+    // Main back handler for predictive back gesture support
+    BackHandler(enabled = toolState is PdfTool.None) {
+        onNavigateBack()
     }
 
     // Clear Annotations Dialog
@@ -746,7 +757,9 @@ private fun AnnotationToolbar(
     onToolSelected: (AnnotationTool) -> Unit,
     onColorPickerClick: () -> Unit,
     onUndoClick: () -> Unit,
-    canUndo: Boolean
+    onRedoClick: () -> Unit,
+    canUndo: Boolean,
+    canRedo: Boolean
 ) {
     val haptic = LocalHapticFeedback.current
 
@@ -814,6 +827,16 @@ private fun AnnotationToolbar(
                     Icons.Default.Undo,
                     contentDescription = "Undo",
                     tint = if (canUndo) LocalContentColor.current else LocalContentColor.current.copy(alpha = 0.38f)
+                )
+            }
+            IconButton(
+                onClick = onRedoClick,
+                enabled = canRedo
+            ) {
+                Icon(
+                    Icons.Default.Redo,
+                    contentDescription = "Redo",
+                    tint = if (canRedo) LocalContentColor.current else LocalContentColor.current.copy(alpha = 0.38f)
                 )
             }
         }
@@ -1056,6 +1079,7 @@ private fun PdfPagesContent(
     onScaleChange: (Float) -> Unit,
     pagePanX: Float,
     onPagePanXChange: (Float) -> Unit,
+    currentPage: Int,
     listState: LazyListState,
     isEditMode: Boolean,
     selectedTool: AnnotationTool,
