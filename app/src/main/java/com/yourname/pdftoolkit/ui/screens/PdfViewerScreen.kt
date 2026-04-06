@@ -19,8 +19,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.rememberScrollState
@@ -94,13 +95,21 @@ fun PdfViewerScreen(
 
     // Local UI state
     var currentPage by remember { mutableIntStateOf(1) }
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var offsetY by remember { mutableFloatStateOf(0f) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
     var showControls by remember { mutableStateOf(true) }
     var showPageSelector by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+
+    // Shared zoom state - hoisted above LazyColumn
+    // Only scale is shared, horizontal pan is per-page
+    val zoomState = rememberTransformableState { zoomChange, _, _ ->
+        // Transformable state handles zoom only
+        // Scale will be applied to each page individually
+    }
+    // Track scale separately for UI controls (zoom buttons, reset, etc.)
+    var scale by remember { mutableFloatStateOf(1f) }
+    // Per-page horizontal pan - tracks offsetX for each page
+    var pagePanX by remember { mutableFloatStateOf(0f) }
 
     // Password state
     var showPasswordDialog by remember { mutableStateOf(false) }
@@ -352,21 +361,15 @@ fun PdfViewerScreen(
                             // Zoom controls
                             IconButton(onClick = {
                                 val newScale = (scale * 1.25f).coerceIn(1f, 5f)
-                                if (newScale <= 1f) {
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                }
                                 scale = newScale
+                                if (newScale <= 1f) pagePanX = 0f
                             }) {
                                 Icon(Icons.Default.ZoomIn, contentDescription = "Zoom In")
                             }
                             IconButton(onClick = {
                                 val newScale = (scale * 0.8f).coerceIn(1f, 5f)
-                                if (newScale <= 1f) {
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                }
                                 scale = newScale
+                                if (newScale <= 1f) pagePanX = 0f
                             }) {
                                 Icon(Icons.Default.ZoomOut, contentDescription = "Zoom Out")
                             }
@@ -415,8 +418,7 @@ fun PdfViewerScreen(
                                 onClick = {
                                     showMenu = false
                                     scale = 1f
-                                    offsetX = 0f
-                                    offsetY = 0f
+                                    pagePanX = 0f
                                 }
                             )
                             if (annotations.isNotEmpty()) {
@@ -553,7 +555,7 @@ fun PdfViewerScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
-                .pointerInput(toolState, selectedAnnotationTool, scale, offsetX, offsetY, viewportSize) {
+                .pointerInput(toolState, selectedAnnotationTool, scale, pagePanX, viewportSize) {
                     // Enable controls toggle and double-tap zoom
                     // Disable gestures only when actively drawing (Edit + Tool)
                     val isDrawing = toolState is PdfTool.Edit && selectedAnnotationTool != AnnotationTool.NONE
@@ -566,18 +568,13 @@ fun PdfViewerScreen(
                                 val newScale = if (scale >= 2f) 1f else 2.5f
                                 
                                 if (newScale > 1f) {
-                                    // Zoom in towards tap point
+                                    // Zoom in towards tap point - adjust horizontal pan
                                     val centerX = viewportSize.width / 2f
-                                    val centerY = viewportSize.height / 2f
                                     val focusX = tapOffset.x - centerX
-                                    val focusY = tapOffset.y - centerY
-                                    
-                                    offsetX = -focusX * (newScale - 1f)
-                                    offsetY = -focusY * (newScale - 1f)
+                                    pagePanX = -focusX * (newScale - 1f)
                                 } else {
-                                    // Zoom out - reset
-                                    offsetX = 0f
-                                    offsetY = 0f
+                                    // Zoom out - reset pan
+                                    pagePanX = 0f
                                 }
                                 scale = newScale
                             }
@@ -610,12 +607,8 @@ fun PdfViewerScreen(
                         loadPage = { viewModel.loadPage(it) },
                         scale = scale,
                         onScaleChange = { scale = it },
-                        offsetX = offsetX,
-                        offsetY = offsetY,
-                        onOffsetChange = { x, y ->
-                            offsetX = x
-                            offsetY = y
-                        },
+                        pagePanX = pagePanX,
+                        onPagePanXChange = { pagePanX = it },
                         listState = listState,
                         isEditMode = isEditMode,
                         selectedTool = selectedAnnotationTool,
@@ -1048,10 +1041,12 @@ private fun InvalidBitmapPlaceholder() {
 }
 
 /**
- * PDF Pages Content with smooth zoom and pan.
+ * PDF Pages Content with per-page zoom.
  * 
- * Uses LazyColumn with beyondBoundsLayout to preload pages outside viewport.
- * This ensures pages are available when panning while zoomed.
+ * Each page is individually zoomable using graphicsLayer on the Image itself.
+ * A single shared zoom state is hoisted above LazyColumn.
+ * Horizontal pan is handled via offsetX on each page graphicsLayer.
+ * LazyColumn handles ALL vertical scrolling always - never disabled.
  */
 @Composable
 private fun PdfPagesContent(
@@ -1059,9 +1054,8 @@ private fun PdfPagesContent(
     loadPage: suspend (Int) -> Bitmap?,
     scale: Float,
     onScaleChange: (Float) -> Unit,
-    offsetX: Float,
-    offsetY: Float,
-    onOffsetChange: (Float, Float) -> Unit,
+    pagePanX: Float,
+    onPagePanXChange: (Float) -> Unit,
     listState: LazyListState,
     isEditMode: Boolean,
     selectedTool: AnnotationTool,
@@ -1078,7 +1072,14 @@ private fun PdfPagesContent(
 ) {
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     
-    // Removed transformableState in favor of pointerInput
+    // Transformable state for pinch zoom - only tracks scale
+    val transformableState = rememberTransformableState { zoomChange, _, _ ->
+        val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+        onScaleChange(newScale)
+        if (newScale <= 1f) {
+            onPagePanXChange(0f)
+        }
+    }
     
     Box(
         modifier = Modifier
@@ -1087,39 +1088,20 @@ private fun PdfPagesContent(
                 containerSize = it
                 onViewportSizeChange(it)
             }
+            // Apply transformable for pinch zoom detection when not drawing
             .then(
                 if (isEditMode && selectedTool != AnnotationTool.NONE) {
-                    Modifier // No gesture handling when drawing
+                    Modifier // No zoom gestures when drawing
                 } else {
-                    Modifier.pointerInput(Unit) {
-                        detectTransformGestures(panZoomLock = true) { _, panChange, zoomChange, _ ->
-                            val newScale = (scale * zoomChange).coerceIn(1f, 5f)
-                            onScaleChange(newScale)
-
-                            if (newScale > 1f) {
-                                // Allow both horizontal and vertical panning when zoomed
-                                onOffsetChange(offsetX + panChange.x, offsetY + panChange.y)
-                            } else {
-                                onOffsetChange(0f, 0f)
-                            }
-                        }
-                    }
+                    Modifier.transformable(state = transformableState)
                 }
             )
     ) {
         LazyColumn(
             state = listState,
-            // Enable scroll only if we aren't drawing, AND if we are not zoomed in
-            userScrollEnabled = (!isEditMode || selectedTool == AnnotationTool.NONE) && scale <= 1f,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    translationX = offsetX
-                    translationY = offsetY
-                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin.Center
-                },
+            // ALWAYS enable vertical scrolling - LazyColumn handles all vertical scroll
+            userScrollEnabled = !isEditMode || selectedTool == AnnotationTool.NONE,
+            modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
             contentPadding = PaddingValues(vertical = 8.dp)
         ) {
@@ -1138,6 +1120,8 @@ private fun PdfPagesContent(
                 PdfPageWithAnnotations(
                     pageIndex = index,
                     loadPage = loadPage,
+                    scale = scale,
+                    pagePanX = pagePanX,
                     isEditMode = isEditMode,
                     selectedTool = selectedTool,
                     selectedColor = selectedColor,
@@ -1167,6 +1151,8 @@ private fun PdfPagesContent(
 private fun PdfPageWithAnnotations(
     pageIndex: Int,
     loadPage: suspend (Int) -> Bitmap?,
+    scale: Float,
+    pagePanX: Float,
     isEditMode: Boolean,
     selectedTool: AnnotationTool,
     selectedColor: Color,
@@ -1211,7 +1197,14 @@ private fun PdfPageWithAnnotations(
                         bitmap = bitmapSnapshot.asImageBitmap(),
                         contentDescription = "Page ${pageIndex + 1}",
                         modifier = Modifier
-                            .fillMaxWidth(),
+                            .fillMaxWidth()
+                            // Per-page zoom: apply scale and horizontal pan to each Image
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = pagePanX
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin.Center
+                            },
                         contentScale = ContentScale.FillWidth
                     )
                 } else {
