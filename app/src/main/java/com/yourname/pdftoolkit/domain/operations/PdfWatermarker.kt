@@ -127,12 +127,10 @@ class PdfWatermarker {
                 config.specificPages.filter { it in 0 until totalPages }
             }
             
-            // Load image bitmap if using image watermark
+            // Load image bitmap if using image watermark (with downsampling to prevent OOM)
             val watermarkBitmap: Bitmap? = when (val type = config.type) {
                 is WatermarkType.Image -> {
-                    context.contentResolver.openInputStream(type.imageUri)?.use {
-                        BitmapFactory.decodeStream(it)
-                    }
+                    loadWatermarkBitmap(context, type.imageUri, type.width.toInt(), type.height.toInt())
                 }
                 else -> null
             }
@@ -381,6 +379,49 @@ class PdfWatermarker {
             WatermarkPosition.TILED -> {
                 Pair(0f, 0f) // Not used for tiled
             }
+        }
+    }
+
+    /**
+     * Load a watermark bitmap with downsampling to prevent OOM.
+     * The bitmap is scaled to the target dimensions to save memory.
+     */
+    private fun loadWatermarkBitmap(context: Context, uri: Uri, targetWidth: Int, targetHeight: Int): Bitmap? {
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                // First, get image dimensions
+                val options = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                BitmapFactory.decodeStream(inputStream, null, options)
+
+                // Calculate sample size to fit target dimensions
+                var sampleSize = 1
+                while (options.outWidth / sampleSize > targetWidth * 2 ||
+                       options.outHeight / sampleSize > targetHeight * 2) {
+                    sampleSize *= 2
+                }
+
+                // Decode with sample size
+                context.contentResolver.openInputStream(uri)?.use { stream2 ->
+                    val decodeOptions = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    BitmapFactory.decodeStream(stream2, null, decodeOptions)?.let { bitmap ->
+                        // Scale to exact target size if needed
+                        if (bitmap.width != targetWidth || bitmap.height != targetHeight) {
+                            val scaled = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+                            bitmap.recycle()
+                            scaled
+                        } else {
+                            bitmap
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 }

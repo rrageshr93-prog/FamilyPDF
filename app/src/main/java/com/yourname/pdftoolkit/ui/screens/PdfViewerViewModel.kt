@@ -464,9 +464,10 @@ class PdfViewerViewModel : ViewModel() {
         val usedMemory = runtime.totalMemory() - runtime.freeMemory()
         val availableMemory = maxMemory - usedMemory
 
-        // Require at least 2x file size in available memory for PDF parsing
+        // Require at least 4x file size in available memory for PDF parsing
         // PDFs can expand to 10x their size in memory when parsed
-        val requiredMemory = fileSize * 3
+        // Be more conservative to prevent OOM on edge cases
+        val requiredMemory = fileSize * 4
 
         return availableMemory > requiredMemory
     }

@@ -240,6 +240,7 @@ class ImageConverter {
     
     /**
      * Add an image as a new page in the document.
+     * Uses JPEGFactory for large images to reduce memory usage.
      */
     private fun addImageAsPage(
         document: PDDocument,
@@ -256,8 +257,13 @@ class ImageConverter {
         val page = PDPage(pageRect)
         document.addPage(page)
         
-        // Create image from bitmap
-        val pdImage = LosslessFactory.createFromImage(document, bitmap)
+        // Use JPEGFactory for large images to save memory, LosslessFactory for small ones
+        val pixelCount = bitmap.width * bitmap.height
+        val pdImage = if (pixelCount > 1024 * 1024) { // > 1MP use JPEG
+            JPEGFactory.createFromImage(document, bitmap, 0.9f)
+        } else {
+            LosslessFactory.createFromImage(document, bitmap)
+        }
         
         // Calculate scaling to fit the page while maintaining aspect ratio
         val pageWidth = pageRect.width
