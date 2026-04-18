@@ -247,9 +247,15 @@ dependencies {
 
     // F-Droid: Tesseract (open source, larger APK but no runtime downloads)
     "fdroidImplementation"("com.rmtheis:tess-two:9.1.0")
-    
+
+    // F-Droid: MuPDF for PDF viewer (fully open source, high performance)
+    "fdroidImplementation"("com.artifex.mupdf:fitz:1.24.9")
+
     // Open Source: Tesseract (same as F-Droid, fully open source)
     "opensourceImplementation"("com.rmtheis:tess-two:9.1.0")
+
+    // Open Source: MuPDF for PDF viewer
+    "opensourceImplementation"("com.artifex.mupdf:fitz:1.24.9")
     
     // Coil for image loading (Apache 2.0) - lightweight (~2MB)
     implementation("io.coil-kt:coil-compose:2.5.0")
