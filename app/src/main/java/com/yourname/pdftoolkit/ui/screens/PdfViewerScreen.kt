@@ -25,8 +25,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -104,17 +104,10 @@ fun PdfViewerScreen(
     var showPageSelector by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
 
-    // Shared zoom state - hoisted above LazyColumn
-    // Only scale is shared, horizontal pan is per-page
-    val zoomState = rememberTransformableState { zoomChange, _, _ ->
-        // Transformable state handles zoom only
-        // Scale will be applied to each page individually
-    }
-    // Track scale separately for UI controls (zoom buttons, reset, etc.)
+    // Global zoom/pan state - persists across all pages
     var scale by remember { mutableFloatStateOf(1f) }
-    // Per-page horizontal pan - tracks offsetX for each page individually
-    val pagePanMap = remember { mutableStateMapOf<Int, Float>() }
-    val currentPagePanX = pagePanMap[currentPage] ?: 0f
+    var panX by remember { mutableFloatStateOf(0f) }
+    var panY by remember { mutableFloatStateOf(0f) }
 
     // Password state
     var showPasswordDialog by remember { mutableStateOf(false) }
@@ -367,7 +360,10 @@ fun PdfViewerScreen(
                             IconButton(onClick = {
                                 val newScale = (scale * 1.25f).coerceIn(1f, 5f)
                                 scale = newScale
-                                if (newScale <= 1f) pagePanMap[currentPage] = 0f
+                                if (newScale <= 1f) {
+                                    panX = 0f
+                                    panY = 0f
+                                }
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }) {
                                 Icon(Icons.Default.ZoomIn, contentDescription = "Zoom In")
@@ -375,7 +371,10 @@ fun PdfViewerScreen(
                             IconButton(onClick = {
                                 val newScale = (scale * 0.8f).coerceIn(1f, 5f)
                                 scale = newScale
-                                if (newScale <= 1f) pagePanMap[currentPage] = 0f
+                                if (newScale <= 1f) {
+                                    panX = 0f
+                                    panY = 0f
+                                }
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             }) {
                                 Icon(Icons.Default.ZoomOut, contentDescription = "Zoom Out")
@@ -425,7 +424,8 @@ fun PdfViewerScreen(
                                 onClick = {
                                     showMenu = false
                                     scale = 1f
-                                    pagePanMap.clear()
+                                    panX = 0f
+                                    panY = 0f
                                 }
                             )
                             if (annotations.isNotEmpty()) {
@@ -564,7 +564,7 @@ fun PdfViewerScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
-                .pointerInput(toolState, selectedAnnotationTool, scale, currentPagePanX, viewportSize, currentPage) {
+                .pointerInput(toolState, selectedAnnotationTool, scale, panX, viewportSize, currentPage) {
                     // Enable controls toggle and double-tap zoom
                     // Disable gestures only when actively drawing (Edit + Tool)
                     val isDrawing = toolState is PdfTool.Edit && selectedAnnotationTool != AnnotationTool.NONE
@@ -580,10 +580,11 @@ fun PdfViewerScreen(
                                     // Zoom in towards tap point - adjust horizontal pan
                                     val centerX = viewportSize.width / 2f
                                     val focusX = tapOffset.x - centerX
-                                    pagePanMap[currentPage] = -focusX * (newScale - 1f)
+                                    panX = -focusX * (newScale - 1f)
                                 } else {
                                     // Zoom out - reset pan
-                                    pagePanMap[currentPage] = 0f
+                                    panX = 0f
+                                    panY = 0f
                                 }
                                 scale = newScale
                             }
@@ -616,8 +617,10 @@ fun PdfViewerScreen(
                         loadPage = { viewModel.loadPage(it) },
                         scale = scale,
                         onScaleChange = { scale = it },
-                        pagePanX = currentPagePanX,
-                        onPagePanXChange = { pagePanMap[currentPage] = it },
+                        pagePanX = panX,
+                        onPagePanXChange = { panX = it },
+                        panY = panY,
+                        onPanYChange = { panY = it },
                         currentPage = currentPage,
                         listState = listState,
                         isEditMode = isEditMode,
@@ -1068,12 +1071,11 @@ private fun InvalidBitmapPlaceholder() {
 }
 
 /**
- * PDF Pages Content with per-page zoom.
- * 
- * Each page is individually zoomable using graphicsLayer on the Image itself.
- * A single shared zoom state is hoisted above LazyColumn.
- * Horizontal pan is handled via offsetX on each page graphicsLayer.
- * LazyColumn handles ALL vertical scrolling always - never disabled.
+ * PDF Pages Content with global zoom/pan.
+ *
+ * All pages share the same zoom/pan state which persists across pages.
+ * Horizontal pan is handled via graphicsLayer translationX.
+ * Vertical scroll is handled by LazyColumn - never disabled.
  */
 @Composable
 private fun PdfPagesContent(
@@ -1083,6 +1085,8 @@ private fun PdfPagesContent(
     onScaleChange: (Float) -> Unit,
     pagePanX: Float,
     onPagePanXChange: (Float) -> Unit,
+    panY: Float,
+    onPanYChange: (Float) -> Unit,
     currentPage: Int,
     listState: LazyListState,
     isEditMode: Boolean,
@@ -1099,56 +1103,28 @@ private fun PdfPagesContent(
     onViewportSizeChange: (IntSize) -> Unit
 ) {
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
-    
-    // Track pan position for smooth gesture handling
-    var panX by remember { mutableFloatStateOf(pagePanX) }
-    var panY by remember { mutableFloatStateOf(0f) }
-    
+
     // Animate scale changes for smooth zooming
     val animatedScale by animateFloatAsState(
         targetValue = scale,
         animationSpec = spring(stiffness = Spring.StiffnessMedium),
         label = "zoom_scale"
     )
-    
+
     // Animate pan changes
     val animatedPanX by animateFloatAsState(
         targetValue = pagePanX,
         animationSpec = spring(stiffness = Spring.StiffnessMedium),
         label = "pan_x"
     )
-    
-    // Improved transformable state with pan and focal point support
-    val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
-        val newScale = (scale * zoomChange).coerceIn(1f, 5f)
-        
-        // Update scale
-        onScaleChange(newScale)
-        
-        // Handle panning when zoomed in
-        if (newScale > 1f) {
-            // Calculate max pan bounds based on container size and scale
-            val maxPanX = (containerSize.width * (newScale - 1f)) / 2f
-            val maxPanY = (containerSize.height * (newScale - 1f)) / 2f
-            
-            // Update pan with boundary constraints
-            val newPanX = (pagePanX + panChange.x).coerceIn(-maxPanX, maxPanX)
-            val newPanY = (panY + panChange.y).coerceIn(-maxPanY, maxPanY)
-            
-            onPagePanXChange(newPanX)
-            panY = newPanY
-        } else {
-            // Reset pan when zoomed out
-            onPagePanXChange(0f)
-            panY = 0f
-        }
-    }
-    
-    // Sync local pan state with external state
-    LaunchedEffect(pagePanX) {
-        panX = pagePanX
-    }
-    
+
+    // Animate panY changes
+    val animatedPanY by animateFloatAsState(
+        targetValue = panY,
+        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        label = "pan_y"
+    )
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1156,15 +1132,30 @@ private fun PdfPagesContent(
                 containerSize = it
                 onViewportSizeChange(it)
             }
-            // Apply transformable for pinch zoom and pan detection when not drawing
+            // Apply zoom/pan gestures when not drawing
+            // Uses custom pointerInput to only capture horizontal pan + zoom
+            // Vertical pan passes through to LazyColumn for scrolling
             .then(
                 if (isEditMode && selectedTool != AnnotationTool.NONE) {
                     Modifier // No zoom gestures when drawing
                 } else {
-                    Modifier.transformable(
-                        state = transformableState,
-                        lockRotationOnZoomPan = false
-                    )
+                    Modifier.pointerInput(Unit) {
+                        detectTransformGestures { centroid, pan, zoom, _ ->
+                            val newScale = (scale * zoom).coerceIn(1f, 5f)
+                            onScaleChange(newScale)
+
+                            if (newScale > 1f) {
+                                // Only apply horizontal pan (x component)
+                                // Vertical pan (y) is ignored - let LazyColumn handle it
+                                val maxPanX = (containerSize.width * (newScale - 1f)) / 2f
+                                val newPanX = (pagePanX + pan.x).coerceIn(-maxPanX, maxPanX)
+                                onPagePanXChange(newPanX)
+                            } else {
+                                onPagePanXChange(0f)
+                                onPanYChange(0f)
+                            }
+                        }
+                    }
                 }
             )
     ) {
