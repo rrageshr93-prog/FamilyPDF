@@ -455,7 +455,6 @@ class PdfAnnotator {
         
         // Guard: check bitmap is valid before creating canvas
         if (bitmap.isRecycled) return null
-        
         val canvas = Canvas(bitmap)
         
         // Background
@@ -727,7 +726,6 @@ class PdfAnnotator {
         
         // Guard: check bitmap is valid before creating canvas
         if (bitmap.isRecycled) return null
-        
         val canvas = Canvas(bitmap)
         
         canvas.drawColor(Color.TRANSPARENT)
