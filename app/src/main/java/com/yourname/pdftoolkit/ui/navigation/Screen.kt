@@ -26,10 +26,18 @@ sealed class Screen(val route: String) {
     object Files : Screen("files")
     object Settings : Screen("settings")
     
-    // PDF Viewer
+    // PDF Viewer (native/AndroidX viewer - primary route)
     object PdfViewer : Screen("pdf_viewer?uri={uri}&name={name}") {
         fun createRoute(uri: String, name: String): String {
             return "pdf_viewer?uri=$uri&name=$name"
+        }
+    }
+
+    // PDF Viewer Legacy (full-featured viewer with annotations)
+    // Used when native viewer doesn't support annotations or user explicitly requests annotation mode
+    object PdfViewerLegacy : Screen("pdf_viewer_legacy?uri={uri}&name={name}") {
+        fun createRoute(uri: String, name: String = "PDF Document"): String {
+            return "pdf_viewer_legacy?uri=$uri&name=$name"
         }
     }
     

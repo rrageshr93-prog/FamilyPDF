@@ -293,6 +293,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // PDF Viewer (Jetpack PDF)
+    // Using alpha04 for compatibility with compileSdk 35 and existing AGP
     implementation("androidx.pdf:pdf-viewer-fragment:1.0.0-alpha04")
     implementation("androidx.fragment:fragment-ktx:1.8.5")
 

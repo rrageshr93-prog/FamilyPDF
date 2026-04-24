@@ -1,5 +1,6 @@
 package com.yourname.pdftoolkit.ui.navigation
 
+import android.content.Intent
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -33,6 +35,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navArgument
 import com.yourname.pdftoolkit.BuildConfig
 import com.yourname.pdftoolkit.ui.components.HistorySidebar
+import com.yourname.pdftoolkit.ui.pdfviewer.PdfViewerScreen as NativePdfViewerScreen
+import com.yourname.pdftoolkit.ui.screens.PdfViewerScreen as LegacyPdfViewerScreen
 import com.yourname.pdftoolkit.ui.screens.*
 
 /**
@@ -48,6 +52,7 @@ fun AppNavigation(
     initialPdfUri: Uri? = null,
     initialPdfName: String? = null
 ) {
+    val context = LocalContext.current
     val actualStartDestination = when {
         initialPdfUri != null -> "pdf_viewer_direct"
         else -> startDestination
@@ -198,15 +203,15 @@ fun AppNavigation(
                 )
             }
             
-            // PDF Viewer with URI parameters
+            // PDF Viewer with URI parameters (native/AndroidX viewer)
             composable(
                 route = Screen.PdfViewer.route,
                 arguments = listOf(
-                    navArgument("uri") { 
+                    navArgument("uri") {
                         type = NavType.StringType
                         defaultValue = ""
                     },
-                    navArgument("name") { 
+                    navArgument("name") {
                         type = NavType.StringType
                         defaultValue = "PDF Document"
                     }
@@ -214,11 +219,62 @@ fun AppNavigation(
             ) { backStackEntry ->
                 val uriString = backStackEntry.arguments?.getString("uri") ?: ""
                 val name = backStackEntry.arguments?.getString("name") ?: "PDF Document"
-                // Don't double-decode: Navigation already decodes the parameter, 
+                // Don't double-decode: Navigation already decodes the parameter,
                 // and Uri.parse handles the encoded format correctly
                 val uri = if (uriString.isNotEmpty()) Uri.parse(uriString) else null
-                
-                PdfViewerScreen(
+
+                NativePdfViewerScreen(
+                    pdfUri = uri,
+                    pdfName = Uri.decode(name),
+                    onNavigateBack = { navController.popBackStack() },
+                    onNavigateToTool = { tool, toolUri, toolName ->
+                        val encodedUri = toolUri?.let { Uri.encode(it.toString()) } ?: ""
+                        val encodedName = Uri.encode(toolName ?: "PDF Document")
+                        when (tool) {
+                            "compress" -> navController.navigate("compress?uri=$encodedUri&name=$encodedName")
+                            "watermark" -> navController.navigate("watermark?uri=$encodedUri&name=$encodedName")
+                            else -> {}
+                        }
+                    },
+                    onAnnotateRequested = { annotateUri ->
+                        // Grant read permission for the URI before navigating to legacy viewer
+                        // This is needed because the new navigation route won't carry the original intent flags
+                        try {
+                            context.grantUriPermission(
+                                context.packageName,
+                                annotateUri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (e: SecurityException) {
+                            // Permission grant failed, but we'll still try to navigate
+                            // Legacy viewer will show error if it can't access the URI
+                        }
+                        // Navigate to legacy viewer for annotation support
+                        val encodedUri = Uri.encode(annotateUri.toString())
+                        navController.navigate(Screen.PdfViewerLegacy.createRoute(encodedUri, name))
+                    }
+                )
+            }
+
+            // PDF Viewer Legacy (full-featured viewer with annotations)
+            composable(
+                route = Screen.PdfViewerLegacy.route,
+                arguments = listOf(
+                    navArgument("uri") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("name") {
+                        type = NavType.StringType
+                        defaultValue = "PDF Document"
+                    }
+                )
+            ) { backStackEntry ->
+                val uriString = backStackEntry.arguments?.getString("uri") ?: ""
+                val name = backStackEntry.arguments?.getString("name") ?: "PDF Document"
+                val uri = if (uriString.isNotEmpty()) Uri.parse(uriString) else null
+
+                LegacyPdfViewerScreen(
                     pdfUri = uri,
                     pdfName = Uri.decode(name),
                     onNavigateBack = { navController.popBackStack() },
@@ -233,13 +289,13 @@ fun AppNavigation(
                     }
                 )
             }
-            
-            // Direct PDF viewer for intent handling
+
+            // Direct PDF viewer for intent handling (uses native viewer)
             composable("pdf_viewer_direct") {
-                PdfViewerScreen(
+                NativePdfViewerScreen(
                     pdfUri = initialPdfUri,
                     pdfName = initialPdfName ?: "PDF Document",
-                    onNavigateBack = { 
+                    onNavigateBack = {
                         navController.navigate(Screen.Tools.route) {
                             popUpTo("pdf_viewer_direct") { inclusive = true }
                         }
@@ -252,10 +308,25 @@ fun AppNavigation(
                             "watermark" -> navController.navigate("watermark?uri=$encodedUri&name=$encodedName")
                             else -> {}
                         }
+                    },
+                    onAnnotateRequested = { annotateUri ->
+                        // Grant read permission for the URI before navigating to legacy viewer
+                        try {
+                            context.grantUriPermission(
+                                context.packageName,
+                                annotateUri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (e: SecurityException) {
+                            // Permission grant failed, but we'll still try to navigate
+                        }
+                        val encodedUri = Uri.encode(annotateUri.toString())
+                        val encodedName = Uri.encode(initialPdfName ?: "PDF Document")
+                        navController.navigate(Screen.PdfViewerLegacy.createRoute(encodedUri, encodedName))
                     }
                 )
             }
-            
+
             // PDF Tool Screens
             composable(Screen.Merge.route) {
                 MergeScreen(onNavigateBack = { navController.popBackStack() })
