@@ -127,6 +127,7 @@ fun PdfViewerScreen(
         engine = null
 
         try {
+            @android.annotation.SuppressLint("NewApi")
             val newEngine = withContext(Dispatchers.Default) {
                 if (useFallbackEngine) {
                     // Explicit fallback to PdfBox
@@ -156,7 +157,7 @@ fun PdfViewerScreen(
                         }
                         PdfEngineFactory.createWithFragmentManager(
                             fragmentManager = (context as AppCompatActivity).supportFragmentManager,
-                            containerId = 1234567,
+                            containerId = View.generateViewId(),
                             context = context,
                             uri = pdfUri,
                             callbacks = callbacks
@@ -353,7 +354,7 @@ fun PdfViewerScreen(
                                 AndroidView(
                                     factory = { ctx ->
                                         FrameLayout(ctx).apply {
-                                            id = 1234567
+                                            id = View.generateViewId()
                                         }
                                     },
                                     modifier = Modifier.fillMaxSize()

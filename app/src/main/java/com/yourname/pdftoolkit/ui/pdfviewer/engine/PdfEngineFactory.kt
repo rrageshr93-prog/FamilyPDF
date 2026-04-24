@@ -55,6 +55,8 @@ object PdfEngineFactory {
         }
     }
 
+    @androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.S)
+    @android.annotation.SuppressLint("NewApi")
     suspend fun createWithFragmentManager(
         context: Context,
         uri: Uri,

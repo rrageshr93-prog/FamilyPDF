@@ -117,13 +117,16 @@ class MuPdfViewerEngine(
                     )
                 } else {
                     // Render on demand
-                    scope.launch(Dispatchers.IO) {
+
+                    androidx.compose.runtime.LaunchedEffect(index) {
+                        withContext(Dispatchers.IO) {
                         val bitmap = renderPage(index)
                         if (bitmap != null) {
                             withContext(Dispatchers.Main) {
                                 pageCache[index] = bitmap
                             }
                         }
+                    }
                     }
                     // Show placeholder
                     Box(
