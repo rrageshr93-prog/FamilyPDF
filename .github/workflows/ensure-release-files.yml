@@ -58,11 +58,12 @@ jobs:
             HAS_AAB=$(echo "$ASSETS" | grep -c "\.aab$" || echo "0")
             HAS_PLAYSTORE_APK=$(echo "$ASSETS" | grep -c "playstore.*\.apk$" || echo "0")
             HAS_OPENSOURCE_APK=$(echo "$ASSETS" | grep -c "opensource.*\.apk$" || echo "0")
+            HAS_FDROID_APK=$(echo "$ASSETS" | grep -c "fdroid.*\.apk$" || echo "0")
             
-            echo "  AAB: $HAS_AAB, PlayStore APK: $HAS_PLAYSTORE_APK, OpenSource APK: $HAS_OPENSOURCE_APK"
+            echo "  AAB: $HAS_AAB, PlayStore APK: $HAS_PLAYSTORE_APK, OpenSource APK: $HAS_OPENSOURCE_APK, F-Droid APK: $HAS_FDROID_APK"
             
             # If any files are missing, we need to build and upload
-            if [ "$HAS_AAB" = "0" ] || [ "$HAS_PLAYSTORE_APK" = "0" ] || [ "$HAS_OPENSOURCE_APK" = "0" ]; then
+            if [ "$HAS_AAB" = "0" ] || [ "$HAS_PLAYSTORE_APK" = "0" ] || [ "$HAS_OPENSOURCE_APK" = "0" ] || [ "$HAS_FDROID_APK" = "0" ]; then
               echo "  → Missing files detected. Building..."
               
               # Extract version from tag (v1.3.129 -> 1.3.129)
@@ -94,8 +95,12 @@ jobs:
                 -PAPP_VERSION_CODE=$VERSION_CODE \
                 -PAPP_VERSION_NAME=$VERSION_NAME || echo "OpenSource APK build failed"
               
+              ./gradlew assembleFdroidRelease \
+                -PAPP_VERSION_CODE=$VERSION_CODE \
+                -PAPP_VERSION_NAME=$VERSION_NAME || echo "F-Droid APK build failed"
+              
               # Upload missing files
-              if [ "$HAS_AAB" = "0" ] && [ -f app/build/outputs/bundle/playstoreRelease/app-playstoreRelease.aab ]; then
+              if [ "$HAS_AAB" = "0" ] && [ -f app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab ]; then
                 echo "  Uploading AAB..."
                 gh release upload "$TAG" app/build/outputs/bundle/playstoreRelease/*.aab --clobber || echo "Failed to upload AAB"
               fi
@@ -114,6 +119,15 @@ jobs:
                   if [ -f "$apk" ]; then
                     echo "  Uploading OpenSource APK: $apk"
                     gh release upload "$TAG" "$apk" --clobber || echo "Failed to upload OpenSource APK"
+                  fi
+                done
+              fi
+              
+              if [ "$HAS_FDROID_APK" = "0" ]; then
+                for apk in app/build/outputs/apk/fdroid/release/*.apk; do
+                  if [ -f "$apk" ]; then
+                    echo "  Uploading F-Droid APK: $apk"
+                    gh release upload "$TAG" "$apk" --clobber || echo "Failed to upload F-Droid APK"
                   fi
                 done
               fi

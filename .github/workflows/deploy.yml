@@ -202,6 +202,8 @@ jobs:
           ls -lh app/build/outputs/apk/playstore/release/*.apk || echo "Play Store APK not found"
           echo "=== Open Source APK ==="
           ls -lh app/build/outputs/apk/opensource/release/*.apk || echo "Open Source APK not found"
+          echo "=== F-Droid APK ==="
+          ls -lh app/build/outputs/apk/fdroid/release/*.apk || echo "F-Droid APK not found"
           echo "=== Mapping File ==="
           ls -lh app/build/outputs/mapping/playstoreRelease/mapping.txt || echo "No mapping file found"
           echo "=== Version ==="
@@ -214,21 +216,21 @@ jobs:
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-aab-v${{ env.APP_VERSION_NAME }}
-          path: app/build/outputs/bundle/playstoreRelease/app-playstoreRelease.aab
+          name: pdftoolkit-aab-v${{ env.APP_VERSION_NAME }}
+          path: app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab
           retention-days: 30
 
       - name: Upload PlayStore APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-playstore-apk-v${{ env.APP_VERSION_NAME }}
+          name: pdftoolkit-playstore-apk-v${{ env.APP_VERSION_NAME }}
           path: app/build/outputs/apk/playstore/release/*.apk
           retention-days: 30
 
       - name: Upload OpenSource APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-opensource-apk-v${{ env.APP_VERSION_NAME }}
+          name: pdftoolkit-opensource-apk-v${{ env.APP_VERSION_NAME }}
           path: app/build/outputs/apk/opensource/release/*.apk
           retention-days: 30
 
@@ -243,7 +245,7 @@ jobs:
           serviceAccountJson: play-store-key.json
           packageName: com.yourname.pdftoolkit
           releaseFiles: app/build/outputs/bundle/playstoreRelease/*.aab
-          track: internal
+          tracks: internal
           status: completed
           mappingFile: app/build/outputs/mapping/playstoreRelease/mapping.txt
           debugSymbols: app/build/intermediates/merged_native_libs/playstoreRelease/mergePlaystoreReleaseNativeLibs/out/lib
@@ -347,10 +349,10 @@ jobs:
       # ════════════════════════════════════════════════════════════════════════════════
       - name: Create GitHub Release
         if: success()
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.APP_VERSION_NAME }}
-          name: "� Release v${{ env.APP_VERSION_NAME }}"
+          name: "PDFToolkit v${{ env.APP_VERSION_NAME }}"
           body: |
             ## PDF Toolkit v${{ env.APP_VERSION_NAME }} (Build ${{ env.APP_VERSION_CODE }})
             

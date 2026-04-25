@@ -114,9 +114,19 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            // Only use signing config if it exists (not available in F-Droid builds)
-            if (false) {
+            // Enable signing for CI builds or when keystore exists
+            val isCi = System.getenv("CI") == "true"
+            val keystorePath = System.getenv("ANDROID_KEYSTORE_FILE") ?: "keystore.jks"
+            val keystoreFile = file(keystorePath)
+
+            if (isCi && keystoreFile.exists()) {
+                println("CI build detected with keystore - enabling signing")
                 signingConfig = signingConfigs.getByName("release")
+            } else if (keystoreFile.exists() && !isCi) {
+                println("Local build with keystore - enabling signing")
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                println("No keystore found or F-Droid build - skipping signing")
             }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -76,6 +76,6 @@ jobs:
     - name: Upload AAB Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: release-aab-v${{ env.APP_VERSION_NAME }}
-        path: app/build/outputs/bundle/playstoreRelease/app-playstoreRelease.aab
+        name: pdftoolkit-v${{ env.APP_VERSION_NAME }}
+        path: app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab
         retention-days: 30
