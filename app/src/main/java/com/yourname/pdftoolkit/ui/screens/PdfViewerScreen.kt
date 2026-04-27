@@ -1141,25 +1141,24 @@ private fun PdfPagesContent(
                                 // Calculate new scale
                                 val newScale = (currentScale * zoomChange).coerceIn(1f, 5f)
 
-                                // Issue 3 Fix: Calculate bounds based on page vs container size
+                                // Issue 2 Fix: Calculate bounds for top-center anchored scaling
+                                // With top-center transformOrigin, scaling expands downward
                                 val containerWidth = currentContainerSize.width.toFloat()
                                 val containerHeight = currentContainerSize.height.toFloat()
-                                val pageWidth = currentPageSize.width.toFloat().takeIf { it > 0 } ?: containerWidth
-                                val pageHeight = currentPageSize.height.toFloat().takeIf { it > 0 } ?: containerHeight
 
-                                // Calculate max offsets: allow panning when scaled page exceeds container
-                                val scaledPageWidth = pageWidth * newScale
-                                val scaledPageHeight = pageHeight * newScale
-                                val maxOffsetX = ((scaledPageWidth - containerWidth) / 2f).coerceAtLeast(0f)
-                                val maxOffsetY = ((scaledPageHeight - containerHeight) / 2f).coerceAtLeast(0f)
+                                // For top-anchor scaling: max X offset centers the content
+                                val maxOffsetX = (containerWidth * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                // For top-anchor scaling: max Y offset allows scrolling down only
+                                val maxOffsetY = (containerHeight * (newScale - 1f)).coerceAtLeast(0f)
 
                                 // Update scale
                                 currentOnScaleChange(newScale)
 
-                                // Update offsets with proper bounds clamping
+                                // Update offsets with top-anchor bounds clamping
                                 if (newScale > 1f) {
                                     val newOffsetX = (currentOffsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
-                                    val newOffsetY = (currentOffsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                    // For top-anchor: only allow panning UP (negative offsetY) to see more content below
+                                    val newOffsetY = (currentOffsetY + panChange.y).coerceIn(-maxOffsetY, 0f)
                                     currentOnOffsetChange(newOffsetX, newOffsetY)
                                 } else {
                                     currentOnOffsetChange(0f, 0f)
@@ -1170,43 +1169,39 @@ private fun PdfPagesContent(
                 }
             )
     ) {
-        LazyColumn(
-            state = listState,
-            // Enable scroll only if not drawing AND not zoomed (scale <= 1.05f)
-            userScrollEnabled = (!isEditMode || selectedTool == AnnotationTool.NONE) && scale <= 1.05f,
+        // Issue 2 Fix: Wrap LazyColumn in Box with graphicsLayer for continuous zoom
+        // This prevents page splitting by scaling entire content as one unit
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                // Issue 5 Fix: Remove graphicsLayer from LazyColumn - apply per-page instead
-                // This improves performance by only transforming visible pages
-                .onSizeChanged { containerSize = it },
-            horizontalAlignment = Alignment.CenterHorizontally,
-            contentPadding = PaddingValues(vertical = 8.dp)
-        ) {
-            items(
-                count = totalPages,
-                key = { it }
-            ) { index ->
-                val pageMatches = searchState.matches.filter { it.pageIndex == index }
-                val currentGlobalResult = searchState.matches.getOrNull(searchState.currentMatchIndex)
-                val currentMatchIndexOnPage = if (currentGlobalResult != null && currentGlobalResult.pageIndex == index) {
-                    pageMatches.indexOf(currentGlobalResult)
-                } else {
-                    -1
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offsetX
+                    translationY = offsetY
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0f) // Top-center anchor
                 }
+        ) {
+            LazyColumn(
+                state = listState,
+                // Enable scroll only if not drawing AND not zoomed (scale <= 1.05f)
+                userScrollEnabled = (!isEditMode || selectedTool == AnnotationTool.NONE) && scale <= 1.05f,
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) {
+                items(
+                    count = totalPages,
+                    key = { it }
+                ) { index ->
+                    val pageMatches = searchState.matches.filter { it.pageIndex == index }
+                    val currentGlobalResult = searchState.matches.getOrNull(searchState.currentMatchIndex)
+                    val currentMatchIndexOnPage = if (currentGlobalResult != null && currentGlobalResult.pageIndex == index) {
+                        pageMatches.indexOf(currentGlobalResult)
+                    } else {
+                        -1
+                    }
 
-                // Issue 5: Apply graphicsLayer per page for better performance
-                // Each page gets the same transform, but only visible pages are composed
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer {
-                            scaleX = scale
-                            scaleY = scale
-                            translationX = offsetX
-                            translationY = offsetY
-                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin.Center
-                        }
-                ) {
                     PdfPageWithAnnotations(
                         pageIndex = index,
                         loadPage = loadPage,
@@ -1230,14 +1225,14 @@ private fun PdfPagesContent(
                             }
                         }
                     )
-                }
 
-                Text(
-                    text = "Page ${index + 1}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
+                    Text(
+                        text = "Page ${index + 1}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
             }
         }
     }

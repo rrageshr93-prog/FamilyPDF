@@ -26,6 +26,9 @@ import com.yourname.pdftoolkit.data.FileManager
 import com.yourname.pdftoolkit.data.PersistedFile
 import com.yourname.pdftoolkit.data.SafUriManager
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -68,9 +71,34 @@ fun FilesScreen(
     val pdfMimeTypes = arrayOf("application/pdf")
     
     /**
+     * Copy content URI to app cache for reliable access.
+     * This is critical for in-app picker URIs that lose permission quickly.
+     */
+    suspend fun copyUriToCache(context: Context, uri: Uri): android.net.Uri? = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        try {
+            val cacheDir = File(context.cacheDir, "viewer_cache")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+            
+            val tempFile = File(cacheDir, "pdf_${System.currentTimeMillis()}.pdf")
+            
+            // Try to copy the file
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    input.copyTo(output)
+                }
+            } ?: return@withContext null
+            
+            // Return file:// URI for direct file access
+            android.net.Uri.fromFile(tempFile)
+        } catch (e: Exception) {
+            android.util.Log.e("FilesScreen", "Failed to copy URI to cache", e)
+            null
+        }
+    }
+    
+    /**
      * Document picker using SAF (ACTION_OPEN_DOCUMENT).
-     * ActivityResultContracts.OpenDocument() automatically uses ACTION_OPEN_DOCUMENT
-     * with CATEGORY_OPENABLE, which is the correct way to open files on Android 10+.
+     * Immediately copies picked file to cache before opening to avoid permission issues.
      */
     val documentPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -78,7 +106,6 @@ fun FilesScreen(
         uri?.let { selectedUri ->
             scope.launch {
                 // Take persistable URI permission immediately
-                // This is CRITICAL for reopening files later
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
                 val persistedFile = SafUriManager.addRecentFile(context, selectedUri, flags)
                 
@@ -86,9 +113,16 @@ fun FilesScreen(
                     // Update local list immediately
                     recentFiles = SafUriManager.loadRecentFiles(context)
                     
-                    // Open PDF files
+                    // Open PDF files - copy to cache first for reliable access
                     if (persistedFile.mimeType == "application/pdf") {
-                        onOpenPdfViewer(selectedUri, persistedFile.name.substringBeforeLast('.'))
+                        // CRITICAL: Copy to cache before opening to avoid permission expiration
+                        val cachedUri = copyUriToCache(context, selectedUri)
+                        if (cachedUri != null) {
+                            onOpenPdfViewer(cachedUri, persistedFile.name.substringBeforeLast('.'))
+                        } else {
+                            // Fallback to direct URI if copy fails (may fail on some devices)
+                            onOpenPdfViewer(selectedUri, persistedFile.name.substringBeforeLast('.'))
+                        }
                     }
                 } else {
                     // Fallback: try to open anyway, may fail if no permission
@@ -96,7 +130,12 @@ fun FilesScreen(
                     val name = getFileName(context, selectedUri)
                     
                     if (mimeType == "application/pdf") {
-                        onOpenPdfViewer(selectedUri, name)
+                        val cachedUri = copyUriToCache(context, selectedUri)
+                        if (cachedUri != null) {
+                            onOpenPdfViewer(cachedUri, name)
+                        } else {
+                            onOpenPdfViewer(selectedUri, name)
+                        }
                     }
                 }
             }
