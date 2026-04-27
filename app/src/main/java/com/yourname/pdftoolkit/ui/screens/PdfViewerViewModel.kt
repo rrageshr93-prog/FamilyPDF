@@ -40,7 +40,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 
 data class PageTextData(val text: String, val positions: List<TextPosition>)
@@ -97,7 +100,8 @@ sealed class PdfViewerUiState {
 class PdfViewerViewModel : ViewModel() {
 
     companion object {
-        const val RENDER_SCALE = 1.5f
+        const val RENDER_SCALE = 1.5f  // ~108 DPI for text-based PDFs
+        const val RENDER_SCALE_SCANNED = 2.5f  // ~180 DPI for scanned/image-heavy PDFs
     }
 
     private val _uiState = MutableStateFlow<PdfViewerUiState>(PdfViewerUiState.Idle)
@@ -134,8 +138,22 @@ class PdfViewerViewModel : ViewModel() {
 
     // Search Job Control
     private var searchJob: Job? = null
+    
+    // Render job tracking to cancel in-flight renders for same page
+    private val renderJobs = mutableMapOf<Int, Job>()
+    
+    // Page state tracking for error handling
+    sealed class PageRenderState {
+        object Idle : PageRenderState()
+        object Loading : PageRenderState()
+        data class Error(val pageIndex: Int, val message: String) : PageRenderState()
+    }
+    private val _pageStates = mutableMapOf<Int, PageRenderState>()
+    
+    // Current page tracking for memory management
+    private var _currentPage: Int = 0
 
-    fun loadPdf(context: Context, uri: Uri, password: String = "") {
+    fun loadPdf(context: Context, uri: Uri, password: String = "", savedPage: Int = 0) {
         viewModelScope.launch {
             _uiState.value = PdfViewerUiState.Loading
             try {
@@ -144,6 +162,15 @@ class PdfViewerViewModel : ViewModel() {
                 }
 
                 closeDocument() // Close existing if any
+                
+                // Pre-open memory check
+                val runtime = Runtime.getRuntime()
+                val availableMemMb = (runtime.maxMemory() - runtime.totalMemory() + runtime.freeMemory()) / 1048576
+                if (availableMemMb < 50) {
+                    Log.w("PdfViewerVM", "Low memory before opening PDF: ${availableMemMb}MB, triggering GC")
+                    System.gc()
+                    delay(100)
+                }
 
                 withContext(Dispatchers.IO) {
                     // Use a temp file to load the PDF to avoid OOM with large files
@@ -169,11 +196,17 @@ class PdfViewerViewModel : ViewModel() {
                             createdTempFile = temp // Track locally
                         }
 
-                        val doc = if (password.isNotEmpty()) {
-                            PDDocument.load(fileToLoad, password, MemoryUsageSetting.setupTempFileOnly())
-                        } else {
-                            PDDocument.load(fileToLoad, MemoryUsageSetting.setupTempFileOnly())
-                        }
+                        // Document open with timeout for large PDFs
+                        val doc = withTimeoutOrNull(30000) {
+                            if (password.isNotEmpty()) {
+                                PDDocument.load(fileToLoad, password, MemoryUsageSetting.setupTempFileOnly())
+                            } else {
+                                PDDocument.load(fileToLoad, MemoryUsageSetting.setupTempFileOnly())
+                            }
+                        } ?: throw Exception("PDF too large to open - timed out after 30 seconds")
+
+                        val pageCount = doc.numberOfPages
+                        Log.d("PdfViewerVM", "Loaded PDF with $pageCount pages")
 
                         documentMutex.withLock {
                             document = doc
@@ -181,7 +214,8 @@ class PdfViewerViewModel : ViewModel() {
                             tempFile = createdTempFile // Transfer ownership to instance
                         }
 
-                        _uiState.value = PdfViewerUiState.Loaded(doc.numberOfPages)
+                        _currentPage = savedPage.coerceIn(0, pageCount - 1)
+                        _uiState.value = PdfViewerUiState.Loaded(pageCount)
                     } catch (e: Exception) {
                         // Clean up any temp file created if loading failed
                         createdTempFile?.delete()
@@ -193,6 +227,38 @@ class PdfViewerViewModel : ViewModel() {
                 _uiState.value = PdfViewerUiState.Error(e.message ?: "Failed to load PDF")
             }
         }
+    }
+    
+    // Update current page for memory management
+    fun updateCurrentPage(pageIndex: Int) {
+        val previousPage = _currentPage
+        _currentPage = pageIndex
+        
+        // Evict pages far from current to save memory
+        viewModelScope.launch(Dispatchers.IO) {
+            val totalPages = (_uiState.value as? PdfViewerUiState.Loaded)?.totalPages ?: return@launch
+            if (totalPages > 10) {
+                // Remove pages more than 5 pages away from current
+                for (i in 0 until totalPages) {
+                    if (kotlin.math.abs(i - pageIndex) > 5) {
+                        bitmapCache.remove(i)
+                    }
+                }
+            }
+        }
+    }
+    
+    // Retry a failed page render
+    fun retryPage(pageIndex: Int) {
+        _pageStates.remove(pageIndex)
+        bitmapCache.remove(pageIndex)
+        viewModelScope.launch {
+            loadPage(pageIndex)
+        }
+    }
+    
+    fun getPageState(pageIndex: Int): PageRenderState {
+        return _pageStates[pageIndex] ?: PageRenderState.Idle
     }
 
     fun setTool(tool: PdfTool) {
@@ -269,32 +335,124 @@ class PdfViewerViewModel : ViewModel() {
     
     private var prefetchJob: Job? = null
     
+    /**
+     * Detect if a page is likely a scanned/image-heavy page by checking for XObject images
+     * in the page resources. Returns true if the page has embedded images.
+     */
+    private fun isScannedPage(pageIndex: Int): Boolean {
+        return try {
+            val doc = document ?: return false
+            if (pageIndex < 0 || pageIndex >= doc.numberOfPages) return false
+            
+            val page = doc.getPage(pageIndex)
+            val resources = page.resources
+            
+            // Check if page has XObject images
+            val xObjectNames = resources.xObjectNames?.toList() ?: emptyList()
+            xObjectNames.isNotEmpty()
+        } catch (e: Exception) {
+            false
+        }
+    }
+    
     suspend fun loadPage(pageIndex: Int): Bitmap? {
+        // Page bounds check
+        val totalPages = (_uiState.value as? PdfViewerUiState.Loaded)?.totalPages ?: return null
+        if (pageIndex < 0 || pageIndex >= totalPages) {
+            Log.w("PdfViewerVM", "Invalid page index: $pageIndex, total pages: $totalPages")
+            return null
+        }
+        
         // Check cache first
         bitmapCache.get(pageIndex)?.let { return it }
+        
+        // Cancel any existing render job for this page
+        renderJobs[pageIndex]?.cancel()
+        
+        // Set loading state
+        _pageStates[pageIndex] = PageRenderState.Loading
+        
+        // Create new render job
+        val job = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val bitmap = renderPageInternal(pageIndex)
+                if (bitmap != null) {
+                    _pageStates[pageIndex] = PageRenderState.Idle
+                } else {
+                    _pageStates[pageIndex] = PageRenderState.Error(pageIndex, "Failed to render page")
+                }
+            } catch (e: CancellationException) {
+                // Re-throw cancellation
+                throw e
+            } catch (e: Exception) {
+                Log.e("PdfViewerVM", "Render failed for page $pageIndex: ${e.message}", e)
+                _pageStates[pageIndex] = PageRenderState.Error(pageIndex, e.message ?: "Render error")
+            } finally {
+                renderJobs.remove(pageIndex)
+            }
+        }
+        
+        renderJobs[pageIndex] = job
+        
+        // Wait for the render job to complete
+        job.join()
         
         // Trigger prefetch for adjacent pages
         prefetchPages(pageIndex)
         
+        return bitmapCache.get(pageIndex)
+    }
+    
+    private suspend fun renderPageInternal(pageIndex: Int): Bitmap? {
         return withContext(Dispatchers.IO) {
             ensureActive()
             
             documentMutex.withLock {
+                ensureActive()
+                
                 try {
                     // Double check cache inside lock
                     bitmapCache.get(pageIndex)?.let { return@withLock it }
                     
                     val renderer = pdfRenderer ?: return@withLock null
-                    val scale = RENDER_SCALE
+                    
+                    // Use higher scale for scanned/image-heavy pages
+                    val scale = if (isScannedPage(pageIndex)) {
+                        Log.d("PdfViewerVM", "Page $pageIndex has images, using higher render scale: $RENDER_SCALE_SCANNED")
+                        RENDER_SCALE_SCANNED
+                    } else {
+                        RENDER_SCALE
+                    }
                     
                     ensureActive()
                     
-                    val bitmap = renderer.renderImage(pageIndex, scale)
+                    var bitmap = renderer.renderImage(pageIndex, scale)
+                    
+                    // Retry logic: if bitmap is null or mostly white, retry once at higher scale
+                    if (bitmap == null || isMostlyWhite(bitmap)) {
+                        if (bitmap != null) {
+                            Log.w("PdfViewerVM", "Page $pageIndex rendered mostly white, re-rendering at higher scale")
+                            bitmap.recycle()
+                        }
+                        
+                        ensureActive()
+                        delay(100) // Brief delay before retry
+                        
+                        bitmap = renderer.renderImage(pageIndex, RENDER_SCALE_SCANNED)
+                    }
                     
                     if (bitmap != null) {
+                        // Final check - if still mostly white, consider it an error
+                        if (isMostlyWhite(bitmap)) {
+                            Log.e("PdfViewerVM", "Page $pageIndex still mostly white after retry")
+                            bitmap.recycle()
+                            return@withLock null
+                        }
                         bitmapCache.put(pageIndex, bitmap)
                     }
                     bitmap
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.e("PdfViewerVM", "Error rendering page $pageIndex", e)
                     null
@@ -303,28 +461,77 @@ class PdfViewerViewModel : ViewModel() {
         }
     }
     
+    /**
+     * Check if a bitmap is mostly white (potential rendering issue with scanned PDFs)
+     */
+    private fun isMostlyWhite(bitmap: Bitmap): Boolean {
+        try {
+            // Sample pixels to check brightness
+            val width = bitmap.width
+            val height = bitmap.height
+            val sampleSize = 10  // Check every 10th pixel
+            var whiteCount = 0
+            var totalSampled = 0
+            
+            for (y in 0 until height step sampleSize) {
+                for (x in 0 until width step sampleSize) {
+                    val pixel = bitmap.getPixel(x, y)
+                    val brightness = (android.graphics.Color.red(pixel) + 
+                                     android.graphics.Color.green(pixel) + 
+                                     android.graphics.Color.blue(pixel)) / 3
+                    if (brightness > 240) {
+                        whiteCount++
+                    }
+                    totalSampled++
+                }
+            }
+            
+            // If more than 95% white, consider it a blank render
+            return totalSampled > 0 && (whiteCount.toFloat() / totalSampled) > 0.95f
+        } catch (e: Exception) {
+            return false
+        }
+    }
+    
     private fun prefetchPages(currentPage: Int) {
         val totalPages = (_uiState.value as? PdfViewerUiState.Loaded)?.totalPages ?: return
         
         prefetchJob?.cancel()
         prefetchJob = viewModelScope.launch(Dispatchers.IO) {
-            val range = listOf(currentPage + 1, currentPage - 1)
+            // Calculate prefetch count based on available memory
+            val runtime = Runtime.getRuntime()
+            val availableMemMb = (runtime.maxMemory() - runtime.totalMemory() + runtime.freeMemory()) / 1048576
+            val prefetchCount = when {
+                availableMemMb > 200 -> 3
+                availableMemMb > 100 -> 2
+                else -> 1
+            }
+            
+            val range = (-prefetchCount..prefetchCount).filter { it != 0 }.map { currentPage + it }
             
             for (page in range) {
                 if (page in 0 until totalPages) {
-                    if (bitmapCache.get(page) == null) {
+                    if (bitmapCache.get(page) == null && _pageStates[page] !is PageRenderState.Error) {
                         yield()
                         
                         try {
                             documentMutex.withLock {
+                                ensureActive()
                                 if (bitmapCache.get(page) == null) {
                                     pdfRenderer?.renderImage(page, RENDER_SCALE)?.let { bitmap ->
-                                        bitmapCache.put(page, bitmap)
+                                        if (!isMostlyWhite(bitmap)) {
+                                            bitmapCache.put(page, bitmap)
+                                        } else {
+                                            bitmap.recycle()
+                                        }
                                     }
                                 }
                             }
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
-                            // Ignore prefetch errors
+                            // Ignore prefetch errors silently
+                            Log.d("PdfViewerVM", "Prefetch failed for page $page: ${e.message}")
                         }
                     }
                 }
@@ -341,6 +548,19 @@ class PdfViewerViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Check if a page has extractable text (not a scanned/image PDF)
+     */
+    private fun hasExtractableText(doc: PDDocument, pageIndex: Int): Boolean {
+        return try {
+            val page = doc.getPage(pageIndex)
+            val contentStream = page.contentStreams
+            contentStream != null && contentStream.hasNext()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     fun search(query: String) {
         // Cancel previous search
         stopSearch()
@@ -354,6 +574,7 @@ class PdfViewerViewModel : ViewModel() {
             _searchState.value = _searchState.value.copy(query = query, isLoading = true)
 
             val matches = mutableListOf<SearchMatch>()
+            val scannedPages = mutableListOf<Int>()
 
             documentMutex.withLock {
                 val doc = document ?: return@withLock
@@ -366,26 +587,45 @@ class PdfViewerViewModel : ViewModel() {
                     try {
                         val lowerQuery = query.lowercase()
 
+                        // Check if page is scanned (image-based)
+                        if (!hasExtractableText(doc, pageIndex) || isScannedPage(pageIndex)) {
+                            scannedPages.add(pageIndex)
+                            continue // Skip scanned pages - can't search them
+                        }
+
                         // Check cache first
                         var pageData = extractedTextCache[pageIndex]
 
                         if (pageData == null) {
-                            // Extract if not cached
-                            val textPositions = mutableListOf<TextPosition>()
-                            val stripper = object : PDFTextStripper() {
-                                override fun processTextPosition(text: TextPosition) {
-                                    super.processTextPosition(text)
-                                    textPositions.add(text)
+                            // Extract with timeout to prevent hanging on large/complex pages
+                            pageData = withTimeoutOrNull(5000) {
+                                val textPositions = mutableListOf<TextPosition>()
+                                val stripper = object : PDFTextStripper() {
+                                    override fun processTextPosition(text: TextPosition) {
+                                        super.processTextPosition(text)
+                                        textPositions.add(text)
+                                    }
                                 }
-                            }
-                            stripper.sortByPosition = true
-                            stripper.startPage = pageIndex + 1
-                            stripper.endPage = pageIndex + 1
+                                stripper.sortByPosition = true
+                                stripper.startPage = pageIndex + 1
+                                stripper.endPage = pageIndex + 1
 
-                            // This populates textPositions and returns text
-                            val pageText = stripper.getText(doc).lowercase()
-                            pageData = PageTextData(pageText, textPositions)
-                            extractedTextCache[pageIndex] = pageData
+                                val pageText = stripper.getText(doc)
+                                // Clean up extracted text
+                                val cleanedText = pageText.lines()
+                                    .map { it.trim() }
+                                    .filter { it.isNotBlank() }
+                                    .joinToString("\n")
+                                
+                                PageTextData(cleanedText.lowercase(), textPositions)
+                            }
+                            
+                            if (pageData != null) {
+                                extractedTextCache[pageIndex] = pageData
+                            } else {
+                                Log.w("PdfViewerVM", "Text extraction timed out for page $pageIndex")
+                                continue
+                            }
                         }
 
                         if (!pageData.text.contains(lowerQuery)) {
@@ -393,7 +633,7 @@ class PdfViewerViewModel : ViewModel() {
                         }
 
                         val sb = StringBuilder()
-                        val positionMap = mutableListOf<Int>() // Map char index in sb to index in textPositions
+                        val positionMap = mutableListOf<Int>()
 
                         pageData.positions.forEachIndexed { index, tp ->
                             sb.append(tp.unicode)
@@ -416,7 +656,6 @@ class PdfViewerViewModel : ViewModel() {
                                     val tpIndex = positionMap[i]
                                     val tp = pageData.positions[tpIndex]
 
-                                    // Scale 1.5f (Matches render scale)
                                     val scale = RENDER_SCALE
                                     val x = tp.xDirAdj * scale
                                     val y = tp.yDirAdj * scale
@@ -432,10 +671,17 @@ class PdfViewerViewModel : ViewModel() {
                             }
                             pos = found + 1
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.e("PdfViewerVM", "Error searching page $pageIndex", e)
                     }
                 }
+            }
+
+            // Log scanned pages that couldn't be searched
+            if (scannedPages.isNotEmpty()) {
+                Log.d("PdfViewerVM", "Search skipped ${scannedPages.size} scanned pages: $scannedPages")
             }
 
             _searchState.value = SearchState(

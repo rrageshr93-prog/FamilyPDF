@@ -26,6 +26,9 @@ import com.yourname.pdftoolkit.BuildConfig
 import com.yourname.pdftoolkit.data.SafUriManager
 import com.yourname.pdftoolkit.ui.navigation.Screen
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Tool section enumeration for categorization.
@@ -66,9 +69,34 @@ fun ToolsScreen(
     val scope = rememberCoroutineScope()
     
     /**
+     * Copy content URI to app cache for reliable access.
+     * This is critical for picker URIs that lose permission quickly.
+     */
+    suspend fun copyUriToCache(context: android.content.Context, uri: Uri): Uri? = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        try {
+            val cacheDir = File(context.cacheDir, "viewer_cache")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+            
+            val tempFile = File(cacheDir, "pdf_${System.currentTimeMillis()}.pdf")
+            
+            // Try to copy the file
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    input.copyTo(output)
+                }
+            } ?: return@withContext null
+            
+            // Return file:// URI for direct file access
+            Uri.fromFile(tempFile)
+        } catch (e: Exception) {
+            android.util.Log.e("ToolsScreen", "Failed to copy URI to cache", e)
+            null
+        }
+    }
+    
+    /**
      * PDF picker using SAF (ACTION_OPEN_DOCUMENT).
-     * ActivityResultContracts.OpenDocument() automatically uses ACTION_OPEN_DOCUMENT
-     * with CATEGORY_OPENABLE for proper Android 10+ scoped storage compliance.
+     * Immediately copies picked file to cache before opening to avoid permission issues.
      */
     val pdfPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -76,7 +104,6 @@ fun ToolsScreen(
         uri?.let { selectedUri ->
             scope.launch {
                 // Take persistable URI permission immediately
-                // This is CRITICAL for reopening files later
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
                 val persistedFile = SafUriManager.addRecentFile(context, selectedUri, flags)
                 
@@ -93,7 +120,14 @@ fun ToolsScreen(
                     displayName
                 }
                 
-                onOpenPdfViewer(selectedUri, name)
+                // CRITICAL: Copy to cache before opening to avoid permission expiration
+                val cachedUri = copyUriToCache(context, selectedUri)
+                if (cachedUri != null) {
+                    onOpenPdfViewer(cachedUri, name)
+                } else {
+                    // Fallback to direct URI if copy fails
+                    onOpenPdfViewer(selectedUri, name)
+                }
             }
         }
     }

@@ -11,10 +11,17 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -66,6 +73,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.yourname.pdftoolkit.data.SafUriManager
 import com.yourname.pdftoolkit.util.PrintUtils
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlin.math.abs
 
 /**
@@ -659,6 +667,8 @@ fun PdfViewerScreen(
                         totalPages = totalPages,
                         currentPage = currentPage,
                         loadPage = { viewModel.loadPage(it) },
+                        getPageState = { viewModel.getPageState(it) },
+                        onRetryPage = { viewModel.retryPage(it) },
                         scale = scale,
                         onScaleChange = { scale = it },
                         offsetX = offsetX,
@@ -1017,7 +1027,7 @@ private fun ColorOption(
 }
 
 @Composable
-private fun LoadingState() {
+private fun LoadingState(totalPages: Int? = null) {
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1029,10 +1039,22 @@ private fun LoadingState() {
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            text = "Loading PDF...",
+            text = if (totalPages != null && totalPages > 0) {
+                "Opening PDF... ($totalPages pages)"
+            } else {
+                "Opening PDF..."
+            },
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        if (totalPages != null && totalPages > 50) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Large PDF - may take a moment",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
     }
 }
 
@@ -1084,6 +1106,8 @@ private fun PdfPagesContent(
     totalPages: Int,
     currentPage: Int,
     loadPage: suspend (Int) -> Bitmap?,
+    getPageState: (Int) -> PdfViewerViewModel.PageRenderState,
+    onRetryPage: (Int) -> Unit,
     scale: Float,
     onScaleChange: (Float) -> Unit,
     offsetX: Float,
@@ -1223,7 +1247,9 @@ private fun PdfPagesContent(
                             if (index == currentPage - 1 && size.width > 0 && size.height > 0) {
                                 pageSize = size
                             }
-                        }
+                        },
+                        pageState = getPageState(index),
+                        onRetry = onRetryPage
                     )
 
                     Text(
@@ -1253,7 +1279,10 @@ private fun PdfPageWithAnnotations(
     pageMatches: List<SearchMatch>,
     currentMatchIndexOnPage: Int,
     // Page size callback for zoom/pan bounds
-    onPageSizeChanged: ((IntSize) -> Unit)? = null
+    onPageSizeChanged: ((IntSize) -> Unit)? = null,
+    // Page state for error handling
+    pageState: PdfViewerViewModel.PageRenderState = PdfViewerViewModel.PageRenderState.Idle,
+    onRetry: (Int) -> Unit = {}
 ) {
     var size by remember { mutableStateOf(IntSize.Zero) }
     val haptic = LocalHapticFeedback.current
@@ -1262,6 +1291,23 @@ private fun PdfPageWithAnnotations(
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = pageIndex) {
         value = loadPage(pageIndex)
     }
+
+    // Shimmer animation for loading state
+    val shimmerColors = listOf(
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+    )
+    val transition = rememberInfiniteTransition(label = "shimmer")
+    val translateAnim by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1000f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer"
+    )
 
     Box(
         modifier = Modifier
@@ -1283,25 +1329,70 @@ private fun PdfPageWithAnnotations(
                 }
                 .heightIn(min = 200.dp)
         ) {
-            if (bitmap != null) {
-                // PDF page image
-                Image(
-                    bitmap = bitmap!!.asImageBitmap(),
-                    contentDescription = "Page ${pageIndex + 1}",
-                    modifier = Modifier
-                        .fillMaxWidth(),
-                    contentScale = ContentScale.FillWidth
-                )
-            } else {
-                // Placeholder
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f / 1.414f)
-                        .background(Color.LightGray.copy(alpha = 0.3f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            when {
+                bitmap != null -> {
+                    // PDF page image
+                    Image(
+                        bitmap = bitmap!!.asImageBitmap(),
+                        contentDescription = "Page ${pageIndex + 1}",
+                        modifier = Modifier
+                            .fillMaxWidth(),
+                        contentScale = ContentScale.FillWidth
+                    )
+                }
+                pageState is PdfViewerViewModel.PageRenderState.Error -> {
+                    // Error state with retry button
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1f / 1.414f)
+                            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ErrorOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Failed to render page ${pageIndex + 1}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = { onRetry(pageIndex) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Text("Retry")
+                        }
+                    }
+                }
+                else -> {
+                    // Loading shimmer skeleton
+                    val brush = Brush.linearGradient(
+                        colors = shimmerColors,
+                        start = Offset(translateAnim - 200f, 0f),
+                        end = Offset(translateAnim, 0f)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1f / 1.414f)
+                            .background(brush)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .align(Alignment.Center),
+                            strokeWidth = 2.dp
+                        )
+                    }
                 }
             }
             
@@ -1564,27 +1655,54 @@ private fun PasswordDialog(
 
 private fun sharePdf(context: Context, pdfUri: Uri) {
     try {
+        // Convert file:// URI to FileProvider content:// URI if needed
+        val shareUri = if (pdfUri.scheme == "file") {
+            androidx.core.content.FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.provider",
+                java.io.File(pdfUri.path!!)
+            )
+        } else {
+            pdfUri // already a content:// URI, use directly
+        }
+        
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
-            putExtra(Intent.EXTRA_STREAM, pdfUri)
+            putExtra(Intent.EXTRA_STREAM, shareUri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         val chooser = Intent.createChooser(shareIntent, "Share PDF")
         context.startActivity(chooser)
     } catch (e: Exception) {
-        Toast.makeText(context, "Unable to share PDF", Toast.LENGTH_SHORT).show()
+        android.util.Log.e("PdfViewerScreen", "Share failed", e)
+        Toast.makeText(context, "Unable to share PDF: ${e.message}", Toast.LENGTH_SHORT).show()
     }
 }
 
 private fun openWithExternalApp(context: Context, pdfUri: Uri) {
     try {
+        // Convert file:// URI to FileProvider content:// URI if needed
+        val viewUri = if (pdfUri.scheme == "file") {
+            androidx.core.content.FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.provider",
+                java.io.File(pdfUri.path!!)
+            )
+        } else {
+            pdfUri // already a content:// URI, use directly
+        }
+        
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(pdfUri, "application/pdf")
+            setDataAndType(viewUri, "application/pdf")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         val chooser = Intent.createChooser(intent, "Open with")
         context.startActivity(chooser)
-    } catch (e: Exception) {
+    } catch (e: android.content.ActivityNotFoundException) {
         Toast.makeText(context, "No app found to open PDF", Toast.LENGTH_SHORT).show()
+    } catch (e: Exception) {
+        android.util.Log.e("PdfViewerScreen", "Open with failed", e)
+        Toast.makeText(context, "Unable to open PDF: ${e.message}", Toast.LENGTH_SHORT).show()
     }
 }

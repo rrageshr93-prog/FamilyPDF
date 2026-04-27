@@ -31,6 +31,9 @@ import com.yourname.pdftoolkit.data.OperationType
 import com.yourname.pdftoolkit.util.FileOpener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Get icon for operation type.
@@ -328,6 +331,35 @@ fun HistorySidebar(
     }
 }
 
+/**
+ * Copy content URI to app cache for reliable access.
+ * This is critical for history items with potentially expired permissions.
+ */
+suspend fun copyUriToCache(context: android.content.Context, uri: Uri): Uri? = withContext(Dispatchers.IO) {
+    try {
+        // If it's already a file:// URI, return as-is
+        if (uri.scheme == "file") return@withContext uri
+        
+        val cacheDir = File(context.cacheDir, "viewer_cache")
+        if (!cacheDir.exists()) cacheDir.mkdirs()
+        
+        val tempFile = File(cacheDir, "pdf_${System.currentTimeMillis()}.pdf")
+        
+        // Try to copy the file
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(tempFile).use { output ->
+                input.copyTo(output)
+            }
+        } ?: return@withContext null
+        
+        // Return file:// URI for direct file access
+        Uri.fromFile(tempFile)
+    } catch (e: Exception) {
+        android.util.Log.e("HistorySidebar", "Failed to copy URI to cache", e)
+        null
+    }
+}
+
 @Composable
 private fun HistoryItem(
     entry: HistoryEntry,
@@ -466,8 +498,15 @@ private fun HistoryItem(
                                                     if (isImage) {
                                                         FileOpener.openMultipleImages(context, uris)
                                                     } else {
-                                                        // For PDFs, open the first one
-                                                        onOpenFile(uris.first())
+                                                        // For PDFs, copy to cache first to avoid permission issues
+                                                        val firstUri = uris.first()
+                                                        val cachedUri = copyUriToCache(context, firstUri)
+                                                        if (cachedUri != null) {
+                                                            onOpenFile(cachedUri)
+                                                        } else {
+                                                            // Fallback: try original URI
+                                                            onOpenFile(firstUri)
+                                                        }
                                                     }
                                                 }
                                             }
@@ -502,8 +541,17 @@ private fun HistoryItem(
                                                 }
                                             }
                                         } else {
+                                            // For PDFs, copy to cache first to avoid permission issues
                                             val uri = Uri.parse(entry.outputFileUri)
-                                            onOpenFile(uri)
+                                            scope.launch(Dispatchers.IO) {
+                                                val cachedUri = copyUriToCache(context, uri)
+                                                if (cachedUri != null) {
+                                                    onOpenFile(cachedUri)
+                                                } else {
+                                                    // Fallback: try original URI
+                                                    onOpenFile(uri)
+                                                }
+                                            }
                                         }
                                     } catch (e: Exception) {
                                         // Handle invalid URI

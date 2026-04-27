@@ -330,7 +330,14 @@ fun FilesScreen(
                                     // Open PDF files only
                                     val displayName = file.name.substringBeforeLast('.')
                                     if (file.mimeType == "application/pdf") {
-                                        onOpenPdfViewer(uri, displayName)
+                                        // CRITICAL: Copy to cache before opening to avoid permission expiration
+                                        val cachedUri = copyUriToCache(context, uri)
+                                        if (cachedUri != null) {
+                                            onOpenPdfViewer(cachedUri, displayName)
+                                        } else {
+                                            // Fallback to direct URI if copy fails
+                                            onOpenPdfViewer(uri, displayName)
+                                        }
                                     }
                                 }
                             }
