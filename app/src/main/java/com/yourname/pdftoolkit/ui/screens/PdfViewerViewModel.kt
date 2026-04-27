@@ -572,14 +572,28 @@ class PdfViewerViewModel : ViewModel() {
 
                     ensureActive()
 
-                    // Try PDFBox first, fall back to Android native PdfRenderer on failure
+                    // Prefer Android's native renderer first for better compatibility with
+                    // complex PDFs (fonts/blend modes/forms), then fall back to PDFBox.
                     val bitmap = try {
-                        renderer.renderImageWithFallback(pageIndex, scale, tempFile)
+                        val nativeBitmap = renderWithNativePdfRenderer(pageIndex, scale, tempFile)
+                        if (nativeBitmap != null && isBitmapValid(nativeBitmap) && !isBitmapCorrupt(nativeBitmap)) {
+                            nativeBitmap
+                        } else {
+                            nativeBitmap?.takeIf { !it.isRecycled }?.recycle()
+                            renderer.renderImageWithFallback(pageIndex, scale, tempFile)
+                        }
                     } catch (e: OutOfMemoryError) {
                         Log.e("PdfViewerVM", "OOM rendering page $pageIndex at scale $scale, retrying with lower scale", e)
                         // Retry with lower scale to prevent crash
                         try {
-                            renderer.renderImageWithFallback(pageIndex, scale * 0.5f, tempFile)
+                            val retryScale = scale * 0.5f
+                            val nativeBitmap = renderWithNativePdfRenderer(pageIndex, retryScale, tempFile)
+                            if (nativeBitmap != null && isBitmapValid(nativeBitmap) && !isBitmapCorrupt(nativeBitmap)) {
+                                nativeBitmap
+                            } else {
+                                nativeBitmap?.takeIf { !it.isRecycled }?.recycle()
+                                renderer.renderImageWithFallback(pageIndex, retryScale, tempFile)
+                            }
                         } catch (e2: OutOfMemoryError) {
                             Log.e("PdfViewerVM", "OOM even at reduced scale for page $pageIndex", e2)
                             null
