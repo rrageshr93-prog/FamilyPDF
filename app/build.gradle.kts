@@ -302,17 +302,8 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
-    // PDF Viewer (Jetpack PDF)
-    // Using alpha04 for compatibility with compileSdk 35 and existing AGP
-    "playstoreImplementation"("androidx.pdf:pdf-viewer-fragment:1.0.0-alpha12")
-    "playstoreImplementation"("androidx.pdf:pdf-ink:1.0.0-alpha12")
+    // Fragment KTX (used by legacy viewer and other components)
     implementation("androidx.fragment:fragment-ktx:1.8.5")
-
-    // Ink Library (for annotations)
-    implementation("androidx.ink:ink-brush:1.0.0-alpha01")
-    implementation("androidx.ink:ink-geometry:1.0.0-alpha01")
-    implementation("androidx.ink:ink-rendering:1.0.0-alpha01")
-    implementation("androidx.ink:ink-strokes:1.0.0-alpha01")
 }
 dependencies {
     testImplementation("androidx.test:core-ktx:1.5.0")

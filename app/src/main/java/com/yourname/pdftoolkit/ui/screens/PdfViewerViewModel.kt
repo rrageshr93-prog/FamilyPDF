@@ -1,7 +1,6 @@
 package com.yourname.pdftoolkit.ui.screens
 
 import android.content.Context
-import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BlendMode
 import android.graphics.Canvas
@@ -10,9 +9,7 @@ import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.net.Uri
-import android.graphics.pdf.PdfRenderer
 import android.os.Build
-import android.os.ParcelFileDescriptor
 import android.util.Log
 import android.util.LruCache
 import androidx.compose.ui.geometry.Offset
@@ -35,7 +32,6 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,7 +41,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
-import kotlin.math.roundToInt
+import kotlinx.coroutines.yield
 
 data class PageTextData(val text: String, val positions: List<TextPosition>)
 
@@ -101,9 +97,7 @@ sealed class PdfViewerUiState {
 class PdfViewerViewModel : ViewModel() {
 
     companion object {
-        const val RENDER_SCALE = 1.0f
-        const val MAX_FILE_SIZE_MB = 100 // Warn/optimize for files larger than this
-        const val MAX_CACHE_SIZE_MB = 20 // Max bitmap cache in MB
+        const val RENDER_SCALE = 1.5f
     }
 
     private val _uiState = MutableStateFlow<PdfViewerUiState>(PdfViewerUiState.Idle)
@@ -126,31 +120,20 @@ class PdfViewerViewModel : ViewModel() {
 
     private val _annotations = MutableStateFlow<List<AnnotationStroke>>(emptyList())
     val annotations: StateFlow<List<AnnotationStroke>> = _annotations.asStateFlow()
-    
-    // Redo stack for undone annotations
-    private val redoStack = mutableListOf<AnnotationStroke>()
 
     // Document management
     private var document: PDDocument? = null
     private var pdfRenderer: PDFRenderer? = null
-    private var nativePdfRenderer: PdfRenderer? = null
-    private var nativePdfRendererPfd: ParcelFileDescriptor? = null
     private val documentMutex = Mutex()
     private var tempFile: File? = null
 
-    // Search Cache
-    private val extractedTextCache = mutableMapOf<Int, PageTextData>()
+    // Search Cache with LRU eviction (max 20 pages) to prevent OOM
+    private val extractedTextCache = object : LinkedHashMap<Int, PageTextData>(20, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<Int, PageTextData>) = size > 20
+    }
 
     // Search Job Control
     private var searchJob: Job? = null
-    @Volatile
-    private var renderTargetWidthPx: Int = 0
-
-    fun setRenderTargetWidth(widthPx: Int) {
-        if (widthPx <= 0 || widthPx == renderTargetWidthPx) return
-        renderTargetWidthPx = widthPx
-        bitmapCache.evictAll()
-    }
 
     fun loadPdf(context: Context, uri: Uri, password: String = "") {
         viewModelScope.launch {
@@ -160,8 +143,9 @@ class PdfViewerViewModel : ViewModel() {
                     PDFBoxResourceLoader.init(context.applicationContext)
                 }
 
+                closeDocument() // Close existing if any
+
                 withContext(Dispatchers.IO) {
-                    closeDocument() // Must run on IO — acquires documentMutex and does file IO
                     // Use a temp file to load the PDF to avoid OOM with large files
                     // PDDocument.load(File, MemoryUsageSetting) allows using disk instead of RAM
                     val fileToLoad: File
@@ -172,19 +156,6 @@ class PdfViewerViewModel : ViewModel() {
                             fileToLoad = File(uri.path!!)
                         } else {
                             // For content URIs, copy to a temp file
-
-                            // Actively scan and delete orphaned temp files
-                            try {
-                                val cacheFiles = context.cacheDir.listFiles()
-                                cacheFiles?.forEach { file ->
-                                    if (file.name.startsWith("pdf_view_")) {
-                                        file.delete()
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                Log.e("PdfViewerVM", "Error cleaning up orphaned temp files", e)
-                            }
-
                             // Create a unique temp file in cache dir
                             val temp = File.createTempFile("pdf_view_", ".pdf", context.cacheDir)
 
@@ -198,67 +169,25 @@ class PdfViewerViewModel : ViewModel() {
                             createdTempFile = temp // Track locally
                         }
 
-                        // Check file size before loading
-                        val fileSize = fileToLoad.length()
-                        val fileSizeMB = fileSize / (1024 * 1024)
-
-                        Log.d("PdfViewerVM", "Loading PDF: ${fileSizeMB}MB, available memory check...")
-
-                        // For very large files, warn but still try to load with reduced settings
-                        if (fileSizeMB > MAX_FILE_SIZE_MB) {
-                            Log.w("PdfViewerVM", "Large PDF detected (${fileSizeMB}MB). Using memory-optimized settings.")
-                        }
-
-                        // Check if we have enough memory to safely load this file
-                        if (!canSafelyLoadFile(fileSize)) {
-                            Log.w("PdfViewerVM", "Low memory warning for ${fileSizeMB}MB PDF. May experience issues.")
-                        }
-
-                        // Use temp-file-only mode for large files to reduce RAM usage
-                        val memorySettings = if (fileSizeMB > MAX_FILE_SIZE_MB) {
-                            MemoryUsageSetting.setupTempFileOnly()
-                        } else {
-                            MemoryUsageSetting.setupMixed(100 * 1024 * 1024) // 100MB threshold before using temp files
-                        }
-
                         val doc = if (password.isNotEmpty()) {
-                            PDDocument.load(fileToLoad, password, memorySettings)
+                            PDDocument.load(fileToLoad, password, MemoryUsageSetting.setupTempFileOnly())
                         } else {
-                            PDDocument.load(fileToLoad, memorySettings)
+                            PDDocument.load(fileToLoad, MemoryUsageSetting.setupTempFileOnly())
                         }
 
                         documentMutex.withLock {
                             document = doc
                             pdfRenderer = PDFRenderer(doc)
                             tempFile = createdTempFile // Transfer ownership to instance
-
-                            try {
-                                val pfd = ParcelFileDescriptor.open(fileToLoad, ParcelFileDescriptor.MODE_READ_ONLY)
-                                nativePdfRendererPfd = pfd
-                                nativePdfRenderer = PdfRenderer(pfd)
-                            } catch (e: Exception) {
-                                Log.e("PdfViewerVM", "Failed to initialize native PdfRenderer", e)
-                            }
-                        }
-
-                        // CRITICAL: Pre-render first page BEFORE setting state to Loaded
-                        // This ensures the bitmap is ready when the UI first displays,
-                        // preventing blank page issues on initial load
-                        val firstPageBitmap = loadPage(0)
-                        if (firstPageBitmap == null && doc.numberOfPages > 0) {
-                            Log.w("PdfViewerVM", "Failed to pre-render first page, but continuing anyway")
                         }
 
                         _uiState.value = PdfViewerUiState.Loaded(doc.numberOfPages)
-                    } catch (e: Throwable) {
+                    } catch (e: Exception) {
                         // Clean up any temp file created if loading failed
                         createdTempFile?.delete()
                         throw e // Rethrow to outer catch
                     }
                 }
-            } catch (e: OutOfMemoryError) {
-                Log.e("PdfViewerVM", "OOM loading PDF - file too large or corrupted", e)
-                _uiState.value = PdfViewerUiState.Error("PDF too large or corrupted. Try a smaller file.")
             } catch (e: Exception) {
                 Log.e("PdfViewerVM", "Error loading PDF", e)
                 _uiState.value = PdfViewerUiState.Error(e.message ?: "Failed to load PDF")
@@ -309,305 +238,61 @@ class PdfViewerViewModel : ViewModel() {
         val currentList = _annotations.value.toMutableList()
         currentList.add(stroke)
         _annotations.value = currentList
-        // Clear redo stack when new annotation is added
-        redoStack.clear()
     }
 
     fun undoAnnotation() {
         val currentList = _annotations.value.toMutableList()
         if (currentList.isNotEmpty()) {
-            val removed = currentList.removeAt(currentList.lastIndex)
-            _annotations.value = currentList
-            // Add to redo stack
-            redoStack.add(removed)
-        }
-    }
-    
-    fun redoAnnotation() {
-        if (redoStack.isNotEmpty()) {
-            val stroke = redoStack.removeAt(redoStack.lastIndex)
-            val currentList = _annotations.value.toMutableList()
-            currentList.add(stroke)
+            currentList.removeAt(currentList.lastIndex)
             _annotations.value = currentList
         }
     }
-    
-    fun canRedo(): Boolean = redoStack.isNotEmpty()
 
     fun clearAnnotations() {
         _annotations.value = emptyList()
     }
 
-    /**
-     * Validates a bitmap for safe drawing operations.
-     * @return true if bitmap is safe to use (non-null, not recycled, has dimensions)
-     */
-    /**
-     * Renders a PDF page using PDFBox with fallback to Android native PdfRenderer.
-     * Detects corrupt bitmaps (all same color) and falls back to native renderer.
-     * Includes font warming for better initial render performance.
-     */
-    private fun PDFRenderer.renderImageWithFallback(pageIndex: Int, scale: Float, pdfFile: File?): Bitmap? {
-        val pdfBoxBitmap = try {
-            renderImage(pageIndex, scale)
-        } catch (e: OutOfMemoryError) {
-            Log.w("PdfViewerVM", "OOM rendering page $pageIndex with PDFBox, using native fallback", e)
-            return renderWithNativePdfRenderer(pageIndex, scale, pdfFile)
-        } catch (e: Exception) {
-            Log.w("PdfViewerVM", "PDFBox render failed for page $pageIndex, falling back to native", e)
-            return renderWithNativePdfRenderer(pageIndex, scale, pdfFile)
-        }
-
-        // Check if bitmap is null (font rendering failure)
-        if (pdfBoxBitmap == null) {
-            Log.w("PdfViewerVM", "PDFBox returned null bitmap for page $pageIndex, using native fallback")
-            return renderWithNativePdfRenderer(pageIndex, scale, pdfFile)
-        }
-
-        // Check if bitmap is corrupt (all pixels same color or empty)
-        if (isBitmapCorrupt(pdfBoxBitmap)) {
-            Log.w("PdfViewerVM", "PDFBox produced corrupt bitmap for page $pageIndex, using native fallback")
-            pdfBoxBitmap.recycle()
-            return renderWithNativePdfRenderer(pageIndex, scale, pdfFile)
-        }
-
-        return pdfBoxBitmap
-    }
-    
-    /**
-     * Checks if a bitmap is corrupt (all pixels same color or mostly empty).
-     */
-    private fun isBitmapCorrupt(bitmap: Bitmap): Boolean {
-        if (bitmap.width <= 0 || bitmap.height <= 0) return true
-        
-        val width = bitmap.width
-        val height = bitmap.height
-        val pixels = IntArray(width * height)
-        
-        // Pull all pixels into memory at once to avoid constant JNI boundary crossing
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        val sampleSize = 10
-        var firstPixel: Int? = null
-        var uniformCount = 0
-        var totalSamples = 0
-        
-        for (y in 0 until height step sampleSize) {
-            for (x in 0 until width step sampleSize) {
-                val index = y * width + x
-                val pixel = pixels[index]
-                if (firstPixel == null) {
-                    firstPixel = pixel
-                } else if (pixel == firstPixel) {
-                    uniformCount++
-                }
-                totalSamples++
-            }
-        }
-        
-        // If 95%+ of sampled pixels are the same color, consider it corrupt
-        return totalSamples > 0 && uniformCount.toFloat() / totalSamples > 0.95f
-    }
-    
-    /**
-     * Renders a PDF page using Android's native PdfRenderer.
-     */
-    private fun renderWithNativePdfRenderer(pageIndex: Int, scale: Float, pdfFile: File?): Bitmap? {
-        val renderer = nativePdfRenderer
-        if (renderer == null) {
-            Log.e("PdfViewerVM", "Cannot use native renderer: not initialized")
-            return null
-        }
-        
-        var page: PdfRenderer.Page? = null
-        
-        return try {
-            if (pageIndex >= renderer.pageCount) {
-                Log.e("PdfViewerVM", "Page index $pageIndex out of bounds for native renderer")
-                return null
-            }
-            
-            page = renderer.openPage(pageIndex)
-
-            val width = (page.width * scale).roundToInt().coerceAtLeast(1)
-            val height = (page.height * scale).roundToInt().coerceAtLeast(1)
-
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            val canvas = if (!bitmap.isRecycled) Canvas(bitmap) else return null
-            canvas.drawColor(android.graphics.Color.WHITE) // White background
-            
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-            
-            Log.d("PdfViewerVM", "Native PdfRenderer successfully rendered page $pageIndex")
-            bitmap
-        } catch (e: Exception) {
-            Log.e("PdfViewerVM", "Native PdfRenderer failed for page $pageIndex", e)
-            null
-        } finally {
-            page?.close()
-        }
-    }
-
-    /**
-     * Validates a bitmap for safe drawing operations.
-     * @return true if bitmap is safe to use (non-null, not recycled, has dimensions, not pending recycle)
-     */
-    private fun isBitmapValid(bitmap: Bitmap?): Boolean {
-        if (bitmap == null) return false
-        if (bitmap.isRecycled) return false
-        if (bitmap.width <= 0 || bitmap.height <= 0) return false
-        return true
-    }
-
-    /**
-     * Safely draws to a canvas with try-catch protection.
-     * @return true if draw operation succeeded
-     */
-    private fun safeCanvasDraw(
-        logTag: String,
-        drawOperation: () -> Unit
-    ): Boolean {
-        return try {
-            drawOperation()
-            true
-        } catch (e: Exception) {
-            Log.e("PdfViewerVM", "Canvas draw failed in $logTag: ${e.message}", e)
-            false
-        }
-    }
-
-    // Bitmap cache with dynamic sizing based on file size and available memory
+    // Bitmap cache for rendered pages
     private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
-    private val maxCacheSize = (MAX_CACHE_SIZE_MB * 1024).coerceAtMost(maxMemory / 8)
-    private val bitmapCache = object : LruCache<Int, Bitmap>(maxCacheSize) {
+    private val cacheSize = maxMemory / 8
+    private val bitmapCache = object : LruCache<Int, Bitmap>(cacheSize) {
         override fun sizeOf(key: Int, bitmap: Bitmap): Int {
             return bitmap.byteCount / 1024
         }
-
-        override fun entryRemoved(evicted: Boolean, key: Int, oldValue: Bitmap?, newValue: Bitmap?) {
-            super.entryRemoved(evicted, key, oldValue, newValue)
-            // Removed manual bitmap.recycle() and pendingRecycleBitmaps completely
-            // Let the GC handle it to prevent black boxes and scrambled pixels bugs
+        
+        override fun entryRemoved(evicted: Boolean, key: Int, oldValue: Bitmap, newValue: Bitmap?) {
+            if (evicted) {
+                oldValue.recycle()
+            }
         }
     }
-
-    /**
-     * Check if there's enough memory to safely load a PDF file.
-     * For large files, we need to be more conservative with memory.
-     */
-    private fun canSafelyLoadFile(fileSize: Long): Boolean {
-        val runtime = Runtime.getRuntime()
-        val maxMemory = runtime.maxMemory()
-        val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-        val availableMemory = maxMemory - usedMemory
-
-        // Require at least 4x file size in available memory for PDF parsing
-        // PDFs can expand to 10x their size in memory when parsed
-        // Be more conservative to prevent OOM on edge cases
-        val requiredMemory = fileSize * 4
-
-        return availableMemory > requiredMemory
-    }
-
-    private fun getRenderTargetWidthPx(): Int {
-        return renderTargetWidthPx.takeIf { it > 0 }
-            ?: Resources.getSystem().displayMetrics.widthPixels.coerceAtLeast(1)
-    }
-
-    private fun getPageRenderScale(page: PDPage): Float {
-        val pageBox = page.cropBox ?: page.mediaBox
-        val pageWidthPt = (pageBox.width.takeIf { it > 0f }
-            ?: page.mediaBox.width.takeIf { it > 0f }
-            ?: 595f)
-        val targetWidthPx = getRenderTargetWidthPx().toFloat()
-        return (targetWidthPx / pageWidthPt).coerceIn(0.1f, 4.0f)
-    }
-
-    /**
-     * Calculate appropriate render scale based on file size and available memory.
-     * Large files use lower scale to prevent OOM.
-     */
-    private fun getOptimalRenderScale(fileSize: Long): Float {
-        val fileSizeMB = fileSize / (1024 * 1024)
-        return when {
-            fileSizeMB > 100 -> 0.75f // Large files: 75% scale
-            fileSizeMB > 50 -> 0.85f // Medium-large: 85% scale
-            else -> RENDER_SCALE // Normal: 100% scale
-        }
-    }
-
+    
     private var prefetchJob: Job? = null
     
     suspend fun loadPage(pageIndex: Int): Bitmap? {
-        // Check cache first - validate bitmap is still usable
-        bitmapCache.get(pageIndex)?.let { cached ->
-            if (isBitmapValid(cached)) {
-                return cached
-            } else {
-                // Remove invalid bitmap from cache
-                bitmapCache.remove(pageIndex)
-            }
-        }
-
+        // Check cache first
+        bitmapCache.get(pageIndex)?.let { return it }
+        
         // Trigger prefetch for adjacent pages
         prefetchPages(pageIndex)
-
+        
         return withContext(Dispatchers.IO) {
             ensureActive()
-
+            
             documentMutex.withLock {
                 try {
                     // Double check cache inside lock
-                    bitmapCache.get(pageIndex)?.let { cached ->
-                        if (isBitmapValid(cached)) {
-                            return@withLock cached
-                        } else {
-                            bitmapCache.remove(pageIndex)
-                        }
-                    }
-
+                    bitmapCache.get(pageIndex)?.let { return@withLock it }
+                    
                     val renderer = pdfRenderer ?: return@withLock null
-                    val doc = document ?: return@withLock null
-                    val scale = getPageRenderScale(doc.getPage(pageIndex))
-
+                    val scale = RENDER_SCALE
+                    
                     ensureActive()
-
-                    // Prefer Android's native renderer first for better compatibility with
-                    // complex PDFs (fonts/blend modes/forms), then fall back to PDFBox.
-                    val bitmap = try {
-                        val nativeBitmap = renderWithNativePdfRenderer(pageIndex, scale, tempFile)
-                        if (nativeBitmap != null && isBitmapValid(nativeBitmap) && !isBitmapCorrupt(nativeBitmap)) {
-                            nativeBitmap
-                        } else {
-                            nativeBitmap?.takeIf { !it.isRecycled }?.recycle()
-                            renderer.renderImageWithFallback(pageIndex, scale, tempFile)
-                        }
-                    } catch (e: OutOfMemoryError) {
-                        Log.e("PdfViewerVM", "OOM rendering page $pageIndex at scale $scale, retrying with lower scale", e)
-                        // Retry with lower scale to prevent crash
-                        try {
-                            val retryScale = scale * 0.5f
-                            val nativeBitmap = renderWithNativePdfRenderer(pageIndex, retryScale, tempFile)
-                            if (nativeBitmap != null && isBitmapValid(nativeBitmap) && !isBitmapCorrupt(nativeBitmap)) {
-                                nativeBitmap
-                            } else {
-                                nativeBitmap?.takeIf { !it.isRecycled }?.recycle()
-                                renderer.renderImageWithFallback(pageIndex, retryScale, tempFile)
-                            }
-                        } catch (e2: OutOfMemoryError) {
-                            Log.e("PdfViewerVM", "OOM even at reduced scale for page $pageIndex", e2)
-                            null
-                        }
-                    } catch (e: Exception) {
-                        Log.e("PdfViewerVM", "Error rendering page $pageIndex with PDFBox, trying native fallback", e)
-                        renderWithNativePdfRenderer(pageIndex, scale, tempFile)
-                    }
-
-                    if (bitmap != null && isBitmapValid(bitmap)) {
+                    
+                    val bitmap = renderer.renderImage(pageIndex, scale)
+                    
+                    if (bitmap != null) {
                         bitmapCache.put(pageIndex, bitmap)
-                    } else if (bitmap != null && bitmap.isRecycled) {
-                        Log.w("PdfViewerVM", "Rendered bitmap already recycled for page $pageIndex")
-                        return@withLock null
                     }
                     bitmap
                 } catch (e: Exception) {
@@ -617,57 +302,30 @@ class PdfViewerViewModel : ViewModel() {
             }
         }
     }
-
+    
     private fun prefetchPages(currentPage: Int) {
         val totalPages = (_uiState.value as? PdfViewerUiState.Loaded)?.totalPages ?: return
-
+        
         prefetchJob?.cancel()
         prefetchJob = viewModelScope.launch(Dispatchers.IO) {
-            val range = listOf(
-                currentPage + 1, currentPage + 2, currentPage + 3,  // Ahead pages
-                currentPage - 1, currentPage - 2                       // Behind pages
-            )
-
+            val range = listOf(currentPage + 1, currentPage - 1)
+            
             for (page in range) {
                 if (page in 0 until totalPages) {
-                    // Skip if already cached and valid
-                    val cached = bitmapCache.get(page)
-                    if (cached != null && isBitmapValid(cached)) {
-                        continue
-                    }
-                    if (cached != null && !isBitmapValid(cached)) {
-                        bitmapCache.remove(page)
-                    }
-
-                    yield()
-
-                    try {
-                        documentMutex.withLock {
-                            val cached2 = bitmapCache.get(page)
-                            if (cached2 != null && isBitmapValid(cached2)) {
-                                return@withLock
-                            }
-                            if (cached2 != null) {
-                                bitmapCache.remove(page)
-                            }
-
-                            try {
-                                val doc = document ?: return@withLock
-                                val scale = getPageRenderScale(doc.getPage(page))
-                                pdfRenderer?.renderImageWithFallback(page, scale, tempFile)?.let { bitmap ->
-                                    if (isBitmapValid(bitmap)) {
+                    if (bitmapCache.get(page) == null) {
+                        yield()
+                        
+                        try {
+                            documentMutex.withLock {
+                                if (bitmapCache.get(page) == null) {
+                                    pdfRenderer?.renderImage(page, RENDER_SCALE)?.let { bitmap ->
                                         bitmapCache.put(page, bitmap)
-                                    } else {
-                                        Log.w("PdfViewerVM", "Prefetched invalid bitmap for page $page")
                                     }
                                 }
-                            } catch (e: OutOfMemoryError) {
-                                Log.w("PdfViewerVM", "OOM prefetching page $page, skipping")
                             }
+                        } catch (e: Exception) {
+                            // Ignore prefetch errors
                         }
-                    } catch (e: Exception) {
-                        // Ignore prefetch errors
-                        Log.w("PdfViewerVM", "Error prefetching page $page: ${e.message}")
                     }
                 }
             }
@@ -759,7 +417,7 @@ class PdfViewerViewModel : ViewModel() {
                                     val tp = pageData.positions[tpIndex]
 
                                     // Scale 1.5f (Matches render scale)
-                                    val scale = getPageRenderScale(doc.getPage(pageIndex))
+                                    val scale = RENDER_SCALE
                                     val x = tp.xDirAdj * scale
                                     val y = tp.yDirAdj * scale
                                     val w = tp.widthDirAdj * scale
@@ -906,17 +564,27 @@ class PdfViewerViewModel : ViewModel() {
 
                             // Render fresh and ensure mutable copy
                             val rendered = pdfRenderer?.renderImage(pageIndex, RENDER_SCALE)
-                            val workingBitmap = rendered?.copy(Bitmap.Config.ARGB_8888, true).also {
-                                // Recycle the immutable rendered one if it was created just for this
-                                rendered?.recycle()
+                            val workingBitmap = rendered?.let { bitmap ->
+                                // Check available memory before creating a copy (doubles memory usage)
+                                val runtime = Runtime.getRuntime()
+                                val availableMemory = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
+                                val bitmapSize = bitmap.byteCount.toLong()
+
+                                if (availableMemory < bitmapSize * 2) {
+                                    // Not enough memory for copy - use original bitmap directly
+                                    // This may not support drawing but prevents OOM
+                                    Log.w("PdfViewerVM", "Low memory: skipping bitmap copy for page $pageIndex")
+                                    bitmap
+                                } else {
+                                    // Safe to create mutable copy
+                                    bitmap.copy(Bitmap.Config.ARGB_8888, true).also {
+                                        // Recycle the immutable rendered one if it was created just for this
+                                        bitmap.recycle()
+                                    }
+                                }
                             }
 
                             if (workingBitmap != null) {
-                                // Guard: Ensure bitmap is valid before creating canvas
-                                if (workingBitmap.isRecycled) {
-                                    return@withLock
-                                }
-                                
                                 try {
                                     val canvas = Canvas(workingBitmap)
                                     val paint = Paint().apply {
@@ -962,10 +630,7 @@ class PdfViewerViewModel : ViewModel() {
                                                 val p = annotation.points[i]
                                                 path.lineTo(p.x * workingBitmap.width, p.y * workingBitmap.height)
                                             }
-                                            // Safe draw with try-catch protection
-                                            safeCanvasDraw("saveAnnotations-page$pageIndex") {
-                                                canvas.drawPath(path, paint)
-                                            }
+                                            canvas.drawPath(path, paint)
                                         }
                                     }
 
@@ -1013,22 +678,13 @@ class PdfViewerViewModel : ViewModel() {
     private suspend fun closeDocument() {
         documentMutex.withLock {
             try {
-                nativePdfRenderer?.close()
-                nativePdfRendererPfd?.close()
-            } catch (e: Exception) {
-                Log.e("PdfViewerVM", "Error closing native renderer", e)
-            }
-            try {
                 document?.close()
             } catch (e: Exception) {
                 Log.e("PdfViewerVM", "Error closing document", e)
             } finally {
                 document = null
                 pdfRenderer = null
-                nativePdfRenderer = null
-                nativePdfRendererPfd = null
                 extractedTextCache.clear()
-                bitmapCache.evictAll()
 
                 // Clean up temp file
                 try {
