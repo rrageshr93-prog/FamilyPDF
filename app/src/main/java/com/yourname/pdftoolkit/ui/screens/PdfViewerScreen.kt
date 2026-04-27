@@ -1145,8 +1145,9 @@ private fun PdfPagesContent(
     ) {
         LazyColumn(
             state = listState,
-            // ALWAYS enable vertical scrolling - LazyColumn handles all vertical scroll
-            userScrollEnabled = (!isEditMode || selectedTool == AnnotationTool.NONE) && scale <= 1f,
+            // Keep vertical scrolling enabled even when zoomed so users can pan through
+            // enlarged content naturally. Only disable while actively drawing annotations.
+            userScrollEnabled = !isEditMode || selectedTool == AnnotationTool.NONE,
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
             contentPadding = PaddingValues(vertical = 8.dp)
@@ -1436,7 +1437,7 @@ private fun PdfPageWithAnnotations(
                             // Marker and other tools render opaque
                             val blendMode = if (stroke.tool == AnnotationTool.HIGHLIGHTER) BlendMode.Multiply else BlendMode.SrcOver
                             val drawColor = if (stroke.tool == AnnotationTool.HIGHLIGHTER) {
-                                stroke.color.copy(alpha = 0.35f)
+                                stroke.color.copy(alpha = 0.3f)
                             } else {
                                 stroke.color
                             }
@@ -1468,7 +1469,7 @@ private fun PdfPageWithAnnotations(
                         }
                         val liveBlendMode = if (selectedTool == AnnotationTool.HIGHLIGHTER) BlendMode.Multiply else BlendMode.SrcOver
                         val liveColor = if (selectedTool == AnnotationTool.HIGHLIGHTER) {
-                            selectedColor.copy(alpha = 0.35f)
+                            selectedColor.copy(alpha = 0.3f)
                         } else {
                             selectedColor
                         }
@@ -1617,4 +1618,3 @@ private fun openWithExternalApp(context: Context, pdfUri: Uri) {
         Toast.makeText(context, "No app found to open PDF", Toast.LENGTH_SHORT).show()
     }
 }
-

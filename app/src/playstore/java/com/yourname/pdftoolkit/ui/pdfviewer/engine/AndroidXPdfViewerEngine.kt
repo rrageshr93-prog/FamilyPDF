@@ -27,12 +27,13 @@ class AndroidXPdfViewerEngine(
     override fun load(uri: Uri) {
         try {
             val fragment = PdfViewerFragment()
+            // Set URI before attaching fragment to avoid blank-page race in androidx.pdf.
+            fragment.documentUri = uri
             pdfFragment = fragment
             safeCommit(
                 fragmentManager.beginTransaction()
                     .replace(containerId, fragment, fragmentTag)
             )
-            fragment.documentUri = uri
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "OOM loading PDF — triggering fallback")
             callbacks.onFallbackRequired()
