@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -51,7 +52,7 @@ import java.io.FileOutputStream
 private suspend fun normalizeUriToCache(context: android.content.Context, uri: Uri, snackbarHostState: SnackbarHostState): Uri? {
     // Only process content:// URIs that aren't from our FileProvider
     if (uri.scheme != "content") return uri
-    if (uri.authority?.contains(context.packageName) == true) return uri
+    if (uri.authority == "${context.packageName}.provider") return uri
 
     return withContext(Dispatchers.IO) {
         try {
@@ -60,8 +61,6 @@ private suspend fun normalizeUriToCache(context: android.content.Context, uri: U
 
             val tempFile = File(cacheDir, "pdf_${System.currentTimeMillis()}.pdf")
 
-            // CRITICAL: For Downloads provider, we need to handle it specially
-            // The permission may have expired, so we try multiple approaches
             var inputStream: java.io.InputStream? = null
 
             try {
@@ -69,18 +68,26 @@ private suspend fun normalizeUriToCache(context: android.content.Context, uri: U
                 inputStream = context.contentResolver.openInputStream(uri)
             } catch (e: SecurityException) {
                 android.util.Log.w("AppNavigation", "Direct open failed for $uri: ${e.message}")
+            }
 
-                // For Downloads provider, try to get a file descriptor via alternative methods
-                if (uri.authority?.contains("downloads") == true || uri.toString().contains("downloads")) {
-                    try {
-                        // Try using the document contract to get a file descriptor
-                        val parcelFileDescriptor = context.contentResolver.openFileDescriptor(uri, "r")
-                        if (parcelFileDescriptor != null) {
-                            inputStream = java.io.FileInputStream(parcelFileDescriptor.fileDescriptor)
+            // Second attempt: open as file descriptor (works for providers where openInputStream fails)
+            if (inputStream == null) {
+                try {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                        java.io.FileInputStream(pfd.fileDescriptor).use { fdInput ->
+                            FileOutputStream(tempFile).use { output ->
+                                fdInput.copyTo(output)
+                            }
                         }
-                    } catch (e2: Exception) {
-                        android.util.Log.w("AppNavigation", "File descriptor approach failed: ${e2.message}")
-                    }
+                    } ?: throw IllegalStateException("Cannot open file descriptor for URI: $uri")
+
+                    return@withContext FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.provider",
+                        tempFile
+                    )
+                } catch (e: Exception) {
+                    android.util.Log.w("AppNavigation", "File descriptor approach failed: ${e.message}")
                 }
             }
 
@@ -94,7 +101,11 @@ private suspend fun normalizeUriToCache(context: android.content.Context, uri: U
                 }
             }
 
-            Uri.fromFile(tempFile)
+            FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.provider",
+                tempFile
+            )
         } catch (e: Exception) {
             android.util.Log.e("AppNavigation", "Failed to normalize URI: $uri", e)
             withContext(kotlinx.coroutines.Dispatchers.Main) {

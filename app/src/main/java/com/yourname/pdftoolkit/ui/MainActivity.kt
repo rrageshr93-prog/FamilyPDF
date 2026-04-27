@@ -219,37 +219,30 @@ class MainActivity : FragmentActivity() {
             return
         }
         
-        // For ACTION_VIEW and ACTION_SEND, we copy to cache asynchronously with a loading state
-        // to avoid blocking the main thread.
+        // For ACTION_VIEW and ACTION_SEND, copy to cache immediately before returning.
+        // These intent grants are temporary; deferring the copy to a coroutine can let
+        // the grant expire and cause "Cannot open input stream ... Permission may have expired".
         when (intent.action) {
             Intent.ACTION_VIEW, Intent.ACTION_SEND -> {
-                Log.d(TAG, "ACTION_VIEW/SEND detected - copying to cache asynchronously")
+                Log.d(TAG, "ACTION_VIEW/SEND detected - copying to cache synchronously")
 
-                // Set loading state
-                pendingIsLoading = true
-                isLoadingState?.value = true
-
-                lifecycleScope.launch {
-                    val accessibleUri = copyToCacheSynchronous(originalUri, fileName)
-
-                    // Update state
-                    pendingIsLoading = false
-
-                    if (accessibleUri == null) {
-                        Log.e(TAG, "Could not obtain access to URI: $originalUri - file will not be opened")
-                        // Ensure we turn off loading state even on failure
-                        isLoadingState?.value = false
-                    } else {
-                        Log.d(TAG, "Successfully copied to cache: $accessibleUri")
-                        pendingPdfUri = accessibleUri
-                        pendingPdfName = fileName.removeSuffix(".pdf").removeSuffix(".PDF")
-
-                        pdfUriState?.value = accessibleUri
-                        pdfNameState?.value = pendingPdfName
-                        isLoadingState?.value = false
-                    }
+                val accessibleUri = runBlocking(Dispatchers.IO) {
+                    copyToCacheSynchronous(originalUri, fileName)
                 }
-                // Return immediately, results will be handled via state updates
+
+                pendingIsLoading = false
+                isLoadingState?.value = false
+
+                if (accessibleUri == null) {
+                    Log.e(TAG, "Could not obtain access to URI: $originalUri - file will not be opened")
+                } else {
+                    Log.d(TAG, "Successfully copied to cache: $accessibleUri")
+                    pendingPdfUri = accessibleUri
+                    pendingPdfName = fileName.removeSuffix(".pdf").removeSuffix(".PDF")
+
+                    pdfUriState?.value = accessibleUri
+                    pdfNameState?.value = pendingPdfName
+                }
                 return
             }
             else -> {
