@@ -1,6 +1,8 @@
 package com.yourname.pdftoolkit.ui.screens
 
+import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
@@ -19,7 +21,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.yourname.pdftoolkit.data.SafUriManager
 import com.yourname.pdftoolkit.ui.navigation.Screen
+import kotlinx.coroutines.launch
 
 /**
  * Category tabs for organizing PDF tools.
@@ -47,6 +51,7 @@ fun HomeScreen(
     onOpenPdfViewer: (Uri, String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var selectedCategory by remember { mutableStateOf(ToolCategory.ORGANIZE) }
     
     // PDF file picker
@@ -54,18 +59,30 @@ fun HomeScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         // uri is null when user cancels - just do nothing
-        uri?.let {
-            val cursor = context.contentResolver.query(it, null, null, null, null)
-            var name = "PDF Document"
-            cursor?.use { c ->
-                if (c.moveToFirst()) {
-                    val nameIndex = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (nameIndex >= 0) {
-                        name = c.getString(nameIndex)?.substringBeforeLast('.') ?: name
+        uri?.let { selectedUri ->
+            scope.launch {
+                // Persist SAF permission immediately so reopening from recent files won't fail.
+                val persistedFile = SafUriManager.addRecentFile(
+                    context,
+                    selectedUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+
+                val name = persistedFile?.name?.substringBeforeLast('.') ?: run {
+                    var displayName = "PDF Document"
+                    context.contentResolver.query(selectedUri, null, null, null, null)?.use { c ->
+                        if (c.moveToFirst()) {
+                            val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (nameIndex >= 0) {
+                                displayName = c.getString(nameIndex)?.substringBeforeLast('.') ?: displayName
+                            }
+                        }
                     }
+                    displayName
                 }
+
+                onOpenPdfViewer(selectedUri, name)
             }
-            onOpenPdfViewer(it, name)
         }
     }
     
