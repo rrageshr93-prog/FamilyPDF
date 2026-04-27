@@ -20,9 +20,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -133,19 +135,30 @@ fun PdfViewerScreen(
     // Reset zoom when changing pages for better UX
     LaunchedEffect(currentPage) {
         if (scale != 1f || offsetX != 0f || offsetY != 0f) {
+            // Capture start values before animation to prevent feedback loop
+            val startScale = scale
+            val startOffsetX = offsetX
+            val startOffsetY = offsetY
             // Animate zoom reset smoothly
             androidx.compose.animation.core.animate(
                 initialValue = 0f,
                 targetValue = 1f,
                 animationSpec = androidx.compose.animation.core.tween(durationMillis = 300)
             ) { progress, _ ->
-                scale = 1f + (scale - 1f) * (1f - progress)
-                offsetX = offsetX * (1f - progress)
-                offsetY = offsetY * (1f - progress)
+                scale = 1f + (startScale - 1f) * (1f - progress)
+                offsetX = startOffsetX * (1f - progress)
+                offsetY = startOffsetY * (1f - progress)
             }
         }
     }
     
+    // Force show controls when zoomed so navigation buttons remain accessible
+    LaunchedEffect(scale) {
+        if (scale > 1.05f) {
+            showControls = true
+        }
+    }
+
     // Handle Save State
     LaunchedEffect(saveState) {
         when (val state = saveState) {
@@ -365,6 +378,17 @@ fun PdfViewerScreen(
                                 )
                             }
                             
+                            // Zoom reset button (visible when zoomed)
+                            if (scale > 1f) {
+                                IconButton(onClick = {
+                                    scale = 1f
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                }) {
+                                    Icon(Icons.Default.ZoomOutMap, contentDescription = "Reset Zoom")
+                                }
+                            }
+
                             // Zoom controls
                             IconButton(onClick = {
                                 val newScale = (scale * 1.25f).coerceIn(1f, 5f)
@@ -633,6 +657,7 @@ fun PdfViewerScreen(
                     val isEditMode = toolState is PdfTool.Edit
                     PdfPagesContent(
                         totalPages = totalPages,
+                        currentPage = currentPage,
                         loadPage = { viewModel.loadPage(it) },
                         scale = scale,
                         onScaleChange = { scale = it },
@@ -1057,6 +1082,7 @@ private fun ErrorState(
 @Composable
 private fun PdfPagesContent(
     totalPages: Int,
+    currentPage: Int,
     loadPage: suspend (Int) -> Bitmap?,
     scale: Float,
     onScaleChange: (Float) -> Unit,
@@ -1078,9 +1104,17 @@ private fun PdfPagesContent(
     onViewportSizeChange: (IntSize) -> Unit
 ) {
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
-    
-    // Removed transformableState in favor of pointerInput
-    
+    var pageSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Use rememberUpdatedState to get latest values inside pointerInput without restarting
+    val currentScale by rememberUpdatedState(scale)
+    val currentOffsetX by rememberUpdatedState(offsetX)
+    val currentOffsetY by rememberUpdatedState(offsetY)
+    val currentOnScaleChange by rememberUpdatedState(onScaleChange)
+    val currentOnOffsetChange by rememberUpdatedState(onOffsetChange)
+    val currentContainerSize by rememberUpdatedState(containerSize)
+    val currentPageSize by rememberUpdatedState(pageSize)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1092,28 +1126,45 @@ private fun PdfPagesContent(
                 if (isEditMode && selectedTool != AnnotationTool.NONE) {
                     Modifier // No gesture handling when drawing
                 } else {
-                    Modifier.pointerInput(containerSize, scale) {
-                        detectTransformGestures(panZoomLock = true) { _, panChange, zoomChange, _ ->
-                            val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                    // Issue 2 Fix: Custom gesture handler using awaitEachGesture
+                    // Key is Unit so it never restarts. Use rememberUpdatedState for all state access.
+                    Modifier.pointerInput(Unit) {
+                        awaitEachGesture {
+                            // Wait for first down
+                            awaitFirstDown(requireUnconsumed = false)
 
-                            // Calculate max pan bounds based on container size and scale
-                            val containerWidth = containerSize.width.toFloat()
-                            val containerHeight = containerSize.height.toFloat()
-                            val maxOffsetX = (containerWidth * (newScale - 1f)) / 2f
-                            val maxOffsetY = (containerHeight * (newScale - 1f)) / 2f
+                            do {
+                                val event = awaitPointerEvent()
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
 
-                            // Update scale first
-                            onScaleChange(newScale)
+                                // Calculate new scale
+                                val newScale = (currentScale * zoomChange).coerceIn(1f, 5f)
 
-                            if (newScale > 1f) {
-                                // Clamp offsets to keep PDF visible on screen
-                                val newOffsetX = (offsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
-                                val newOffsetY = (offsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
-                                onOffsetChange(newOffsetX, newOffsetY)
-                            } else {
-                                // Reset offsets when zoomed out
-                                onOffsetChange(0f, 0f)
-                            }
+                                // Issue 3 Fix: Calculate bounds based on page vs container size
+                                val containerWidth = currentContainerSize.width.toFloat()
+                                val containerHeight = currentContainerSize.height.toFloat()
+                                val pageWidth = currentPageSize.width.toFloat().takeIf { it > 0 } ?: containerWidth
+                                val pageHeight = currentPageSize.height.toFloat().takeIf { it > 0 } ?: containerHeight
+
+                                // Calculate max offsets: allow panning when scaled page exceeds container
+                                val scaledPageWidth = pageWidth * newScale
+                                val scaledPageHeight = pageHeight * newScale
+                                val maxOffsetX = ((scaledPageWidth - containerWidth) / 2f).coerceAtLeast(0f)
+                                val maxOffsetY = ((scaledPageHeight - containerHeight) / 2f).coerceAtLeast(0f)
+
+                                // Update scale
+                                currentOnScaleChange(newScale)
+
+                                // Update offsets with proper bounds clamping
+                                if (newScale > 1f) {
+                                    val newOffsetX = (currentOffsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
+                                    val newOffsetY = (currentOffsetY + panChange.y).coerceIn(-maxOffsetY, maxOffsetY)
+                                    currentOnOffsetChange(newOffsetX, newOffsetY)
+                                } else {
+                                    currentOnOffsetChange(0f, 0f)
+                                }
+                            } while (event.changes.any { it.pressed })
                         }
                     }
                 }
@@ -1122,17 +1173,12 @@ private fun PdfPagesContent(
         LazyColumn(
             state = listState,
             // Enable scroll only if not drawing AND not zoomed (scale <= 1.05f)
-            // When zoomed, detectTransformGestures handles pan exclusively
             userScrollEnabled = (!isEditMode || selectedTool == AnnotationTool.NONE) && scale <= 1.05f,
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    translationX = offsetX
-                    translationY = offsetY
-                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin.Center
-                },
+                // Issue 5 Fix: Remove graphicsLayer from LazyColumn - apply per-page instead
+                // This improves performance by only transforming visible pages
+                .onSizeChanged { containerSize = it },
             horizontalAlignment = Alignment.CenterHorizontally,
             contentPadding = PaddingValues(vertical = 8.dp)
         ) {
@@ -1147,24 +1193,45 @@ private fun PdfPagesContent(
                 } else {
                     -1
                 }
-                
-                PdfPageWithAnnotations(
-                    pageIndex = index,
-                    loadPage = loadPage,
-                    isEditMode = isEditMode,
-                    selectedTool = selectedTool,
-                    selectedColor = selectedColor,
-                    annotations = annotations.filter { it.pageIndex == index },
-                    currentStroke = if (currentDrawingPageIndex == index) currentStroke else emptyList(),
-                    onCurrentStrokeChange = { stroke ->
-                        onDrawingPageIndexChange(index)
-                        onCurrentStrokeChange(stroke)
-                    },
-                    onAddAnnotation = onAddAnnotation,
-                    pageMatches = pageMatches,
-                    currentMatchIndexOnPage = currentMatchIndexOnPage
-                )
-                
+
+                // Issue 5: Apply graphicsLayer per page for better performance
+                // Each page gets the same transform, but only visible pages are composed
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offsetX
+                            translationY = offsetY
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin.Center
+                        }
+                ) {
+                    PdfPageWithAnnotations(
+                        pageIndex = index,
+                        loadPage = loadPage,
+                        isEditMode = isEditMode,
+                        selectedTool = selectedTool,
+                        selectedColor = selectedColor,
+                        annotations = annotations.filter { it.pageIndex == index },
+                        currentStroke = if (currentDrawingPageIndex == index) currentStroke else emptyList(),
+                        onCurrentStrokeChange = { stroke ->
+                            onDrawingPageIndexChange(index)
+                            onCurrentStrokeChange(stroke)
+                        },
+                        onAddAnnotation = onAddAnnotation,
+                        pageMatches = pageMatches,
+                        currentMatchIndexOnPage = currentMatchIndexOnPage,
+                        onPageSizeChanged = { size ->
+                            // Track size of the currently visible page for accurate pan bounds
+                            // currentPage is 1-indexed, index is 0-indexed
+                            if (index == currentPage - 1 && size.width > 0 && size.height > 0) {
+                                pageSize = size
+                            }
+                        }
+                    )
+                }
+
                 Text(
                     text = "Page ${index + 1}",
                     style = MaterialTheme.typography.labelSmall,
@@ -1189,11 +1256,13 @@ private fun PdfPageWithAnnotations(
     onAddAnnotation: (AnnotationStroke) -> Unit,
     // Search params
     pageMatches: List<SearchMatch>,
-    currentMatchIndexOnPage: Int
+    currentMatchIndexOnPage: Int,
+    // Page size callback for zoom/pan bounds
+    onPageSizeChanged: ((IntSize) -> Unit)? = null
 ) {
     var size by remember { mutableStateOf(IntSize.Zero) }
     val haptic = LocalHapticFeedback.current
-    
+
     // Load bitmap lazily
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = pageIndex) {
         value = loadPage(pageIndex)
@@ -1213,7 +1282,10 @@ private fun PdfPageWithAnnotations(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .onSizeChanged { size = it }
+                .onSizeChanged {
+                    size = it
+                    onPageSizeChanged?.invoke(it)
+                }
                 .heightIn(min = 200.dp)
         ) {
             if (bitmap != null) {

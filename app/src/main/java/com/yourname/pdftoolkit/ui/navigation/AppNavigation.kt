@@ -44,6 +44,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 
 /**
  * URI normalization helper: copies content URIs from external providers to cache for reliable access.
@@ -61,17 +62,41 @@ private suspend fun normalizeUriToCache(context: android.content.Context, uri: U
 
             val tempFile = File(cacheDir, "pdf_${System.currentTimeMillis()}.pdf")
 
-            var inputStream: java.io.InputStream? = null
-
+            // Try to take persistable permission first (required for media documents provider)
             try {
-                // First attempt: direct open
-                inputStream = context.contentResolver.openInputStream(uri)
+                val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+                android.util.Log.d("AppNavigation", "Took persistable permission for: $uri")
             } catch (e: SecurityException) {
-                android.util.Log.w("AppNavigation", "Direct open failed for $uri: ${e.message}")
+                // Permission may not be persistable, continue anyway - temporary grant might work
+                android.util.Log.w("AppNavigation", "Could not take persistable permission for $uri: ${e.message}")
+            } catch (e: Exception) {
+                // Other errors, log and continue
+                android.util.Log.w("AppNavigation", "Error taking permission for $uri: ${e.message}")
             }
 
-            // Second attempt: open as file descriptor (works for providers where openInputStream fails)
-            if (inputStream == null) {
+            // Track if we successfully copied the file
+            var copiedSuccessfully = false
+
+            // First attempt: direct input stream open (works for most providers)
+            try {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        input.copyTo(output)
+                    }
+                    copiedSuccessfully = true
+                    android.util.Log.d("AppNavigation", "Copied URI to cache via input stream: $uri")
+                }
+            } catch (e: SecurityException) {
+                android.util.Log.w("AppNavigation", "Direct open failed for $uri: ${e.message}")
+            } catch (e: IOException) {
+                android.util.Log.w("AppNavigation", "IO error opening $uri: ${e.message}")
+            } catch (e: Exception) {
+                android.util.Log.w("AppNavigation", "Error opening input stream for $uri: ${e.message}")
+            }
+
+            // Second attempt: open as file descriptor (works for media documents provider)
+            if (!copiedSuccessfully) {
                 try {
                     context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
                         java.io.FileInputStream(pfd.fileDescriptor).use { fdInput ->
@@ -79,26 +104,51 @@ private suspend fun normalizeUriToCache(context: android.content.Context, uri: U
                                 fdInput.copyTo(output)
                             }
                         }
-                    } ?: throw IllegalStateException("Cannot open file descriptor for URI: $uri")
-
-                    return@withContext FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.provider",
-                        tempFile
-                    )
+                        copiedSuccessfully = true
+                        android.util.Log.d("AppNavigation", "Copied URI to cache via file descriptor: $uri")
+                    }
+                } catch (e: SecurityException) {
+                    android.util.Log.w("AppNavigation", "File descriptor approach failed (SecurityException): ${e.message}")
+                } catch (e: IOException) {
+                    android.util.Log.w("AppNavigation", "File descriptor approach failed (IOException): ${e.message}")
                 } catch (e: Exception) {
                     android.util.Log.w("AppNavigation", "File descriptor approach failed: ${e.message}")
                 }
             }
 
-            if (inputStream == null) {
-                throw IllegalStateException("Cannot open input stream for URI: $uri - Permission may have expired")
+            // Third attempt: query the document and get a fresh URI
+            if (!copiedSuccessfully) {
+                try {
+                    // For media documents, try to get a fresh URI via query
+                    val docId = android.provider.DocumentsContract.getDocumentId(uri)
+                    val freshUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(uri, docId)
+                    
+                    if (freshUri != null && freshUri != uri) {
+                        android.util.Log.d("AppNavigation", "Trying fresh URI: $freshUri")
+                        try {
+                            context.contentResolver.openInputStream(freshUri)?.use { input ->
+                                FileOutputStream(tempFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                                copiedSuccessfully = true
+                                android.util.Log.d("AppNavigation", "Copied using fresh URI")
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.w("AppNavigation", "Fresh URI approach failed: ${e.message}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("AppNavigation", "Could not build fresh URI: ${e.message}")
+                }
             }
 
-            inputStream.use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    input.copyTo(output)
-                }
+            if (!copiedSuccessfully) {
+                throw IllegalStateException("Cannot access PDF file. Permission may have expired or file is no longer accessible.")
+            }
+
+            // Verify the temp file was created successfully
+            if (!tempFile.exists() || tempFile.length() == 0L) {
+                throw IllegalStateException("Failed to copy PDF file to cache")
             }
 
             FileProvider.getUriForFile(
