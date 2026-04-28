@@ -231,7 +231,6 @@ class PdfViewerViewModel : ViewModel() {
     
     // Update current page for memory management
     fun updateCurrentPage(pageIndex: Int) {
-        val previousPage = _currentPage
         _currentPage = pageIndex
         
         // Evict pages far from current to save memory
@@ -250,9 +249,20 @@ class PdfViewerViewModel : ViewModel() {
     
     // Retry a failed page render
     fun retryPage(pageIndex: Int) {
-        _pageStates.remove(pageIndex)
-        bitmapCache.remove(pageIndex)
         viewModelScope.launch {
+            // 1. Cancel any in-flight render job for this page
+            renderJobs[pageIndex]?.cancel()
+            renderJobs.remove(pageIndex)
+            
+            // 2. Clear the page state to Loading (this triggers UI recomposition without the old bitmap)
+            _pageStates[pageIndex] = PageRenderState.Loading
+            
+            // 3. Remove from cache - but now the cache's entryRemoved will check
+            // if page is nearby before recycling. The old bitmap reference in UI
+            // will be dropped by recomposition before any potential recycle.
+            bitmapCache.remove(pageIndex)
+            
+            // 4. Start fresh render
             loadPage(pageIndex)
         }
     }
@@ -327,9 +337,14 @@ class PdfViewerViewModel : ViewModel() {
         }
         
         override fun entryRemoved(evicted: Boolean, key: Int, oldValue: Bitmap, newValue: Bitmap?) {
-            if (evicted) {
-                oldValue.recycle()
+            // Only recycle if evicted from cache AND not the current page or nearby pages
+            // Never recycle if this page might still be visible
+            if (evicted && kotlin.math.abs(key - _currentPage) > 3) {
+                if (!oldValue.isRecycled) {
+                    oldValue.recycle()
+                }
             }
+            // If page is nearby, keep bitmap alive - let GC handle it
         }
     }
     
@@ -426,28 +441,9 @@ class PdfViewerViewModel : ViewModel() {
                     
                     ensureActive()
                     
-                    var bitmap = renderer.renderImage(pageIndex, scale)
-                    
-                    // Retry logic: if bitmap is null or mostly white, retry once at higher scale
-                    if (bitmap == null || isMostlyWhite(bitmap)) {
-                        if (bitmap != null) {
-                            Log.w("PdfViewerVM", "Page $pageIndex rendered mostly white, re-rendering at higher scale")
-                            bitmap.recycle()
-                        }
-                        
-                        ensureActive()
-                        delay(100) // Brief delay before retry
-                        
-                        bitmap = renderer.renderImage(pageIndex, RENDER_SCALE_SCANNED)
-                    }
+                    val bitmap = renderer.renderImage(pageIndex, scale)
                     
                     if (bitmap != null) {
-                        // Final check - if still mostly white, consider it an error
-                        if (isMostlyWhite(bitmap)) {
-                            Log.e("PdfViewerVM", "Page $pageIndex still mostly white after retry")
-                            bitmap.recycle()
-                            return@withLock null
-                        }
                         bitmapCache.put(pageIndex, bitmap)
                     }
                     bitmap
@@ -458,38 +454,6 @@ class PdfViewerViewModel : ViewModel() {
                     null
                 }
             }
-        }
-    }
-    
-    /**
-     * Check if a bitmap is mostly white (potential rendering issue with scanned PDFs)
-     */
-    private fun isMostlyWhite(bitmap: Bitmap): Boolean {
-        try {
-            // Sample pixels to check brightness
-            val width = bitmap.width
-            val height = bitmap.height
-            val sampleSize = 10  // Check every 10th pixel
-            var whiteCount = 0
-            var totalSampled = 0
-            
-            for (y in 0 until height step sampleSize) {
-                for (x in 0 until width step sampleSize) {
-                    val pixel = bitmap.getPixel(x, y)
-                    val brightness = (android.graphics.Color.red(pixel) + 
-                                     android.graphics.Color.green(pixel) + 
-                                     android.graphics.Color.blue(pixel)) / 3
-                    if (brightness > 240) {
-                        whiteCount++
-                    }
-                    totalSampled++
-                }
-            }
-            
-            // If more than 95% white, consider it a blank render
-            return totalSampled > 0 && (whiteCount.toFloat() / totalSampled) > 0.95f
-        } catch (e: Exception) {
-            return false
         }
     }
     
@@ -519,11 +483,7 @@ class PdfViewerViewModel : ViewModel() {
                                 ensureActive()
                                 if (bitmapCache.get(page) == null) {
                                     pdfRenderer?.renderImage(page, RENDER_SCALE)?.let { bitmap ->
-                                        if (!isMostlyWhite(bitmap)) {
-                                            bitmapCache.put(page, bitmap)
-                                        } else {
-                                            bitmap.recycle()
-                                        }
+                                        bitmapCache.put(page, bitmap)
                                     }
                                 }
                             }
