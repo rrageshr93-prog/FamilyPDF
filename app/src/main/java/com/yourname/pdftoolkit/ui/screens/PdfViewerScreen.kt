@@ -1127,8 +1127,37 @@ private fun PdfPagesContent(
     searchState: SearchState,
     onViewportSizeChange: (IntSize) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Track zoom state to detect when zoom starts
+    val isZoomed = scale > 1.05f
+    var wasZoomed by remember { mutableStateOf(false) }
+
+    // When zoom starts, capture LazyColumn scroll position and bake into offsetY
+    // This prevents the content from snapping back to top
+    LaunchedEffect(isZoomed) {
+        if (isZoomed && !wasZoomed) {
+            // Zoom just started - capture current scroll offset
+            val scrollOffset = listState.firstVisibleItemScrollOffset.toFloat()
+            val itemIndex = listState.firstVisibleItemIndex
+            // Calculate total offset based on item index and scroll offset
+            // This represents how far down the user has scrolled
+            val estimatedItemHeight = if (pageSize.height > 0) pageSize.height.toFloat() else 1000f
+            val totalScrollOffset = (itemIndex.toFloat() * estimatedItemHeight * scale) + (scrollOffset * scale)
+            // Set initial offsetY to negative of scroll offset to keep content in place
+            onOffsetChange(offsetX, -totalScrollOffset.coerceAtMost(0f))
+        } else if (!isZoomed && wasZoomed) {
+            // Zoom just ended (reset to 1x) - scroll LazyColumn to current position
+            // This ensures the list is at the correct position after zoom out
+            val currentItem = listState.firstVisibleItemIndex
+            scope.launch {
+                listState.scrollToItem(currentItem)
+            }
+        }
+        wasZoomed = isZoomed
+    }
 
     // Use rememberUpdatedState to get latest values inside pointerInput without restarting
     val currentScale by rememberUpdatedState(scale)
@@ -1165,23 +1194,26 @@ private fun PdfPagesContent(
                                 // Calculate new scale
                                 val newScale = (currentScale * zoomChange).coerceIn(1f, 5f)
 
-                                // Issue 2 Fix: Calculate bounds for top-center anchored scaling
-                                // With top-center transformOrigin, scaling expands downward
+                                // Calculate bounds for scaled content panning
                                 val containerWidth = currentContainerSize.width.toFloat()
                                 val containerHeight = currentContainerSize.height.toFloat()
 
-                                // For top-anchor scaling: max X offset centers the content
+                                // For X: center-aligned scaling
                                 val maxOffsetX = (containerWidth * (newScale - 1f) / 2f).coerceAtLeast(0f)
-                                // For top-anchor scaling: max Y offset allows scrolling down only
-                                val maxOffsetY = (containerHeight * (newScale - 1f)).coerceAtLeast(0f)
+
+                                // For Y: calculate based on total content height to allow full vertical panning
+                                // Total content height = page height * total pages * scale
+                                val estimatedPageHeight = if (currentPageSize.height > 0) currentPageSize.height.toFloat() else containerHeight
+                                val totalContentHeight = estimatedPageHeight * totalPages * newScale
+                                val maxOffsetY = (totalContentHeight - containerHeight).coerceAtLeast(0f)
 
                                 // Update scale
                                 currentOnScaleChange(newScale)
 
-                                // Update offsets with top-anchor bounds clamping
+                                // Update offsets with proper bounds clamping
                                 if (newScale > 1f) {
                                     val newOffsetX = (currentOffsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
-                                    // For top-anchor: only allow panning UP (negative offsetY) to see more content below
+                                    // Allow panning in both Y directions within bounds
                                     val newOffsetY = (currentOffsetY + panChange.y).coerceIn(-maxOffsetY, 0f)
                                     currentOnOffsetChange(newOffsetX, newOffsetY)
                                 } else {
