@@ -27,9 +27,12 @@ import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
+import android.os.Handler
+import android.os.Looper
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Collections
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -146,12 +149,46 @@ class PdfViewerViewModel : ViewModel() {
     sealed class PageRenderState {
         object Idle : PageRenderState()
         object Loading : PageRenderState()
+        data class Loaded(val bitmap: Bitmap) : PageRenderState()
         data class Error(val pageIndex: Int, val message: String) : PageRenderState()
     }
     private val _pageStates = mutableMapOf<Int, PageRenderState>()
     
     // Current page tracking for memory management
     private var _currentPage: Int = 0
+    
+    // Safe bitmap lifecycle management - prevents recycled bitmap crashes
+    private val activeBitmaps = Collections.synchronizedSet(mutableSetOf<Bitmap>())
+    private val uiBitmapRefs = mutableMapOf<Int, Bitmap>()
+    
+    private fun safeRecycle(bitmap: Bitmap?) {
+        bitmap ?: return
+        if (!bitmap.isRecycled && !activeBitmaps.contains(bitmap)) {
+            bitmap.recycle()
+        }
+    }
+    
+    private fun registerActiveBitmap(pageIndex: Int, bitmap: Bitmap) {
+        synchronized(activeBitmaps) {
+            // Remove old bitmap from active set if exists
+            uiBitmapRefs[pageIndex]?.let { oldBitmap ->
+                activeBitmaps.remove(oldBitmap)
+                safeRecycle(oldBitmap)
+            }
+            // Register new bitmap
+            activeBitmaps.add(bitmap)
+            uiBitmapRefs[pageIndex] = bitmap
+        }
+    }
+    
+    private fun unregisterBitmap(pageIndex: Int) {
+        synchronized(activeBitmaps) {
+            uiBitmapRefs.remove(pageIndex)?.let { oldBitmap ->
+                activeBitmaps.remove(oldBitmap)
+                safeRecycle(oldBitmap)
+            }
+        }
+    }
 
     fun loadPdf(context: Context, uri: Uri, password: String = "", savedPage: Int = 0) {
         viewModelScope.launch {
@@ -252,14 +289,14 @@ class PdfViewerViewModel : ViewModel() {
         viewModelScope.launch {
             // 1. Cancel any in-flight render job for this page
             renderJobs[pageIndex]?.cancel()
+            // DO NOT recycle - let GC handle cancelled job's bitmap
             renderJobs.remove(pageIndex)
             
-            // 2. Clear the page state to Loading (this triggers UI recomposition without the old bitmap)
+            // 2. Unregister old bitmap from active set and clear state
+            unregisterBitmap(pageIndex)
             _pageStates[pageIndex] = PageRenderState.Loading
             
-            // 3. Remove from cache - but now the cache's entryRemoved will check
-            // if page is nearby before recycling. The old bitmap reference in UI
-            // will be dropped by recomposition before any potential recycle.
+            // 3. Remove from cache - cache.entryRemoved does NOT recycle
             bitmapCache.remove(pageIndex)
             
             // 4. Start fresh render
@@ -337,14 +374,9 @@ class PdfViewerViewModel : ViewModel() {
         }
         
         override fun entryRemoved(evicted: Boolean, key: Int, oldValue: Bitmap, newValue: Bitmap?) {
-            // Only recycle if evicted from cache AND not the current page or nearby pages
-            // Never recycle if this page might still be visible
-            if (evicted && kotlin.math.abs(key - _currentPage) > 3) {
-                if (!oldValue.isRecycled) {
-                    oldValue.recycle()
-                }
-            }
-            // If page is nearby, keep bitmap alive - let GC handle it
+            // DO NOT recycle here - only drop the reference
+            // The bitmap lifecycle is managed by activeBitmaps reference counting
+            // Recycling happens through safeRecycle() only when not in use by UI
         }
     }
     
@@ -378,11 +410,17 @@ class PdfViewerViewModel : ViewModel() {
             return null
         }
         
-        // Check cache first
-        bitmapCache.get(pageIndex)?.let { return it }
+        // Check cache first - register as active for UI
+        bitmapCache.get(pageIndex)?.let { cachedBitmap ->
+            registerActiveBitmap(pageIndex, cachedBitmap)
+            _pageStates[pageIndex] = PageRenderState.Loaded(cachedBitmap)
+            return cachedBitmap
+        }
         
         // Cancel any existing render job for this page
         renderJobs[pageIndex]?.cancel()
+        // DO NOT recycle cancelled job's bitmap - let GC handle it
+        renderJobs.remove(pageIndex)
         
         // Set loading state
         _pageStates[pageIndex] = PageRenderState.Loading
@@ -392,12 +430,13 @@ class PdfViewerViewModel : ViewModel() {
             try {
                 val bitmap = renderPageInternal(pageIndex)
                 if (bitmap != null) {
-                    _pageStates[pageIndex] = PageRenderState.Idle
+                    registerActiveBitmap(pageIndex, bitmap)
+                    _pageStates[pageIndex] = PageRenderState.Loaded(bitmap)
                 } else {
                     _pageStates[pageIndex] = PageRenderState.Error(pageIndex, "Failed to render page")
                 }
             } catch (e: CancellationException) {
-                // Re-throw cancellation
+                // Re-throw cancellation - do not recycle, let GC handle
                 throw e
             } catch (e: Exception) {
                 Log.e("PdfViewerVM", "Render failed for page $pageIndex: ${e.message}", e)
@@ -415,7 +454,7 @@ class PdfViewerViewModel : ViewModel() {
         // Trigger prefetch for adjacent pages
         prefetchPages(pageIndex)
         
-        return bitmapCache.get(pageIndex)
+        return bitmapCache.get(pageIndex)?.also { registerActiveBitmap(pageIndex, it) }
     }
     
     private suspend fun renderPageInternal(pageIndex: Int): Bitmap? {
@@ -784,8 +823,8 @@ class PdfViewerViewModel : ViewModel() {
                                 } else {
                                     // Safe to create mutable copy
                                     bitmap.copy(Bitmap.Config.ARGB_8888, true).also {
-                                        // Recycle the immutable rendered one if it was created just for this
-                                        bitmap.recycle()
+                                        // Safe recycle - check if bitmap is still in use
+                                        safeRecycle(bitmap)
                                     }
                                 }
                             }
@@ -856,8 +895,8 @@ class PdfViewerViewModel : ViewModel() {
                                         cs.drawImage(pdImage, 0f, 0f, pageWidth, pageHeight)
                                     }
                                 } finally {
-                                    // Ensure bitmap is recycled immediately to free native memory
-                                    workingBitmap.recycle()
+                                    // Safe recycle - check if bitmap is still in use by UI
+                                    safeRecycle(workingBitmap)
                                 }
                             }
                         }
@@ -906,9 +945,32 @@ class PdfViewerViewModel : ViewModel() {
     }
 
     override fun onCleared() {
+        // Cancel all render jobs first
+        renderJobs.values.forEach { it.cancel() }
+        renderJobs.clear()
+        
+        // Use Handler to defer cleanup - allows Compose to finish drawing current frame
+        Handler(Looper.getMainLooper()).postDelayed({
+            viewModelScope.launch(Dispatchers.IO) {
+                // Unregister all active bitmaps before recycling
+                synchronized(activeBitmaps) {
+                    uiBitmapRefs.values.forEach { bitmap ->
+                        activeBitmaps.remove(bitmap)
+                        if (!bitmap.isRecycled) {
+                            bitmap.recycle()
+                        }
+                    }
+                    uiBitmapRefs.clear()
+                    activeBitmaps.clear()
+                }
+                
+                // Clear cache without recycling (already handled above)
+                bitmapCache.evictAll()
+                
+                closeDocument()
+            }
+        }, 500) // 500ms delay ensures Compose is done drawing
+        
         super.onCleared()
-        viewModelScope.launch(Dispatchers.IO) {
-            closeDocument()
-        }
     }
 }

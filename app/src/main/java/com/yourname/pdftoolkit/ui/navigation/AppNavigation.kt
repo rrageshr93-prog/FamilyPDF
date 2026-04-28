@@ -47,20 +47,70 @@ import java.io.FileOutputStream
 import java.io.IOException
 
 /**
+ * Cache management: Clean up old PDF cache files to prevent unbounded growth.
+ * Keeps cache under maxCacheSizeMb by deleting oldest files first.
+ */
+private fun cleanPdfCache(context: android.content.Context) {
+    val cacheDir = File(context.cacheDir, "pdf_cache")
+    if (!cacheDir.exists()) return
+    
+    val maxCacheSizeMb = 50L
+    val maxCacheSizeBytes = maxCacheSizeMb * 1024 * 1024
+    
+    val files = cacheDir.listFiles()
+        ?.filter { it.isFile && it.name.endsWith(".pdf") }
+        ?.sortedBy { it.lastModified() } // oldest first
+        ?: return
+    
+    var totalSize = files.sumOf { it.length() }
+    
+    for (file in files) {
+        if (totalSize <= maxCacheSizeBytes) break
+        totalSize -= file.length()
+        file.delete()
+        android.util.Log.d("AppNavigation", "Deleted old cache file: ${file.name}")
+    }
+}
+
+/**
  * URI normalization helper: copies content URIs from external providers to cache for reliable access.
  * Returns FileProvider URI for external content URIs, original URI for FileProvider URIs or file:// URIs.
+ * Implements cache size management to prevent 40MB+ accumulation.
  */
-private suspend fun normalizeUriToCache(context: android.content.Context, uri: Uri, snackbarHostState: SnackbarHostState): Uri? {
+private suspend fun normalizeUriToCache(context: android.content.Context, uri: Uri, snackbarHostState: SnackbarHostState, sessionCacheRef: MutableState<File?>): Uri? {
     // Only process content:// URIs that aren't from our FileProvider
     if (uri.scheme != "content") return uri
     if (uri.authority == "${context.packageName}.provider") return uri
 
     return withContext(Dispatchers.IO) {
         try {
-            val cacheDir = File(context.cacheDir, "viewer_cache")
+            // Clean cache before adding new file
+            cleanPdfCache(context)
+            
+            val cacheDir = File(context.cacheDir, "pdf_cache")
             if (!cacheDir.exists()) cacheDir.mkdirs()
 
-            val tempFile = File(cacheDir, "pdf_${System.currentTimeMillis()}.pdf")
+            // Generate unique filename based on URI for potential reuse
+            val uriHash = uri.toString().hashCode().toLong().toString(16)
+            val cacheFile = File(cacheDir, "pdf_${uriHash}.pdf")
+            
+            // Check if valid cached copy already exists (same size as source)
+            val sourceSize = try {
+                context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+            } catch (e: Exception) { -1L }
+            
+            if (cacheFile.exists() && sourceSize > 0 && cacheFile.length() == sourceSize) {
+                android.util.Log.d("AppNavigation", "Reusing existing cache file: ${cacheFile.name}")
+                sessionCacheRef.value = cacheFile
+                return@withContext FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.provider",
+                    cacheFile
+                )
+            }
+
+            // Need to copy - use unique temp file
+            val tempFile = File(cacheDir, "pdf_${System.currentTimeMillis()}_${uriHash}.pdf")
 
             // Try to take persistable permission first (required for media documents provider)
             try {
@@ -151,6 +201,9 @@ private suspend fun normalizeUriToCache(context: android.content.Context, uri: U
                 throw IllegalStateException("Failed to copy PDF file to cache")
             }
 
+            // Track this cache file for cleanup when viewer closes
+            sessionCacheRef.value = tempFile
+
             FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.provider",
@@ -218,6 +271,9 @@ fun AppNavigation(
 
     // Snackbar for URI errors
     val snackbarHostState = remember { SnackbarHostState() }
+    
+    // Track session cache file for cleanup when viewer closes
+    val sessionCacheFile = remember { mutableStateOf<File?>(null) }
 
     Box(modifier = modifier.fillMaxSize()) {
     Scaffold(
@@ -358,10 +414,23 @@ fun AppNavigation(
                 LaunchedEffect(rawUri) {
                     if (rawUri != null) {
                         isNormalizing = true
-                        normalizedUri = normalizeUriToCache(context, rawUri, snackbarHostState)
+                        normalizedUri = normalizeUriToCache(context, rawUri, snackbarHostState, sessionCacheFile)
                         isNormalizing = false
                     } else {
                         normalizedUri = null
+                    }
+                }
+                
+                // Cleanup cache file when leaving viewer
+                DisposableEffect(Unit) {
+                    onDispose {
+                        sessionCacheFile.value?.let { cacheFile ->
+                            if (cacheFile.exists()) {
+                                cacheFile.delete()
+                                android.util.Log.d("AppNavigation", "Deleted session cache file: ${cacheFile.name}")
+                            }
+                            sessionCacheFile.value = null
+                        }
                     }
                 }
 
@@ -402,13 +471,29 @@ fun AppNavigation(
                 var normalizedUri by remember(initialPdfUri) { mutableStateOf<Uri?>(null) }
                 var isNormalizing by remember { mutableStateOf(initialPdfUri != null) }
 
+                // Track session cache file for cleanup when viewer closes
+                val directSessionCacheFile = remember { mutableStateOf<File?>(null) }
+                
                 LaunchedEffect(initialPdfUri) {
                     if (initialPdfUri != null) {
                         isNormalizing = true
-                        normalizedUri = normalizeUriToCache(context, initialPdfUri, snackbarHostState)
+                        normalizedUri = normalizeUriToCache(context, initialPdfUri, snackbarHostState, directSessionCacheFile)
                         isNormalizing = false
                     } else {
                         normalizedUri = null
+                    }
+                }
+                
+                // Cleanup cache file when leaving viewer
+                DisposableEffect(Unit) {
+                    onDispose {
+                        directSessionCacheFile.value?.let { cacheFile ->
+                            if (cacheFile.exists()) {
+                                cacheFile.delete()
+                                android.util.Log.d("AppNavigation", "Deleted session cache file: ${cacheFile.name}")
+                            }
+                            directSessionCacheFile.value = null
+                        }
                     }
                 }
 
