@@ -1,74 +1,100 @@
-# Agent Guidelines for PDF Toolkit Development
+# Agent Guidelines (AI-ready) — PDF Toolkit
 
-This document contains important guidelines and rules that AI agents should follow when working on this PDF Toolkit Android application.
+This project is an Android app with multiple product flavors (Play Store / F-Droid / Open Source). Use this file as the **source of truth** for how to build, release, and keep F-Droid metadata working in CI.
 
-## PDF Viewer Requirements
+## Repo overview
 
-### UI/UX Guidelines
-- **Highlighter Tool**: The highlighter must use transparency and blend modes to highlight text (making it readable underneath), not work as a solid marker
-  - Use `BlendMode.MULTIPLY` or `PorterDuff.Mode.MULTIPLY` for proper highlighting effect
-  - Apply 30% alpha (0.3) for the highlighter layer
-  - Use non-stacking rendering (draw all highlights in a single layer)
+- **Android app**: `app/`
+- **Flavors**: defined in `app/build.gradle.kts`
+  - `playstore`
+  - `fdroid`
+  - `opensource`
+- **Version source of truth (for releases)**: `gradle.properties`
+  - `APP_VERSION_CODE`
+  - `APP_VERSION_NAME`
+- **F-Droid metadata (app repo copy)**: `metadata/com.yourname.pdftoolkit.yml`
+- **F-Droid data repo checkout**: `fdroiddata/` (usually gitignored in this app repo)
+  - Real CI for F-Droid runs against the `fdroiddata` repository’s metadata.
 
-- **Zoom Controls**: Always hide the zoom buttons container in the PDF viewer
-  - Hide `zoom_buttons_container` view
-  - Keep the 3-dot menu visible and functional for user access to other PDF features
+## Flavor intent and constraints
 
-- **Touch Gestures**: Ensure pinch-to-zoom gestures work properly in the PDF viewer
-  - Pass through multi-touch events (`event.pointerCount > 1`) to the underlying PDF viewer
-  - Only intercept single-touch events when in annotation mode
-  - Make overlay views completely transparent to touch events when not annotating
+- **`playstore` flavor**
+  - May include Play Services / proprietary SDKs (e.g., ML Kit).
+  - Used for Play Store releases.
+- **`fdroid` flavor**
+  - Must be fully FOSS-compatible (no Google Play Services).
+  - Uses open OCR stack (Tesseract) instead of ML Kit.
+  - CI should avoid referencing Play-only APIs from this flavor.
+- **`opensource` flavor**
+  - FOSS-first build (no ads, no Firebase, no Play Services).
+  - Similar constraints to `fdroid`, but can be distributed outside F-Droid as well.
 
-### Fragment Lifecycle
-- Set `documentUri` BEFORE adding the fragment to FragmentManager
-- Use `view.post {}` to defer UI modifications until after PDF is fully loaded
-- This prevents blank page issues and ensures proper PDF rendering
+## Building locally (developer machine)
 
-### Annotation Overlay
-- Make the InkOverlayView non-clickable and non-focusable by default
-- Only intercept touch events when actively in annotation mode
-- Set `setOnTouchListener { _, _ -> false }` to ensure complete touch pass-through
+- **Requirements**: JDK 17+, Android SDK installed, Gradle wrapper available.
+- **Common commands**:
+  - `./gradlew :app:assembleFdroidDebug`
+  - `./gradlew :app:assemblePlaystoreDebug`
+  - `./gradlew lintFdroidDebug --continue`
 
-## Code Quality Standards
+## Versioning rules (important for F-Droid)
 
-### Android Best Practices
-- Follow Material Design 3 guidelines
-- Use Jetpack Compose for UI where possible
-- Implement proper ViewModel pattern for state management
-- Handle configuration changes properly
-- Use coroutines for async operations
+F-Droid’s `checkupdates` cannot extract version info if it is dynamic. This project keeps **static** version values in `gradle.properties`:
 
-### Performance
-- Recycle bitmaps immediately after use to free native memory
-- Use mutex locks for thread-safe document access
-- Cache extracted text data for search operations
-- Implement proper cancellation for long-running operations
+- `APP_VERSION_CODE=<int>`
+- `APP_VERSION_NAME=<string>`
 
-### Error Handling
-- Always catch and log exceptions with meaningful messages
-- Provide user-friendly error messages
-- Handle password-protected PDFs gracefully
-- Validate file URIs before processing
+`app/build.gradle.kts` reads those properties for `versionCode`/`versionName` to remain F-Droid friendly.
 
-## Testing Requirements
-- Test PDF rendering with various PDF formats
-- Verify annotation tools work correctly (highlighter, marker, underline)
-- Test pinch-to-zoom and pan gestures
-- Verify save functionality preserves annotations
-- Test with rotated PDF pages
+## F-Droid metadata + GitLab CI (fdroiddata)
 
-## Security Considerations
-- Never commit keystore files or signing credentials
-- Use content URIs for file access
-- Request proper permissions before file operations
-- Validate user input before processing
+The main F-Droid validation/build pipeline runs in the **`fdroiddata` repo**.
 
-## Documentation
-- Add clear comments for critical fixes and workarounds
-- Document any androidx.pdf library limitations
-- Explain complex coordinate transformations
-- Note any API version-specific code
+### Required metadata fields for tag-based updates
+
+- `RepoType: git`
+- `Repo: <git url>`
+- `UpdateCheckMode: Tags`
+- `AutoUpdateMode: Version`
+
+### Fix for “Couldn't find any version information” in `checkupdates`
+
+If the upstream uses Gradle properties for versions, set `UpdateCheckData` to read them from `gradle.properties`:
+
+`UpdateCheckData: gradle.properties|APP_VERSION_CODE=(\\d+)|.|APP_VERSION_NAME=(.+)`
+
+This tells `fdroid checkupdates --auto` how to extract version code/name for each tag.
+
+### CI hygiene: permissions + codequality.json
+
+- `fdroidserver` warns if `config.yml` permissions are not `0600`.
+- Some jobs upload `codequality.json`; ensure it is created (write `[]`) when there are no findings.
+
+## PDF viewer / annotation rules (don’t regress)
+
+### UI/UX guidelines
+- **Highlighter tool** must be transparent and blend with content (not opaque marker).
+  - Use `BlendMode.MULTIPLY` or `PorterDuff.Mode.MULTIPLY`.
+  - Use ~30% alpha.
+  - Avoid stacking: render highlights in a single layer.
+- **Zoom controls**: keep zoom button container hidden; preserve menu access.
+- **Touch gestures**: don’t break pinch-to-zoom; allow multi-touch to reach the PDF view.
+
+### Fragment lifecycle and overlays
+- Set `documentUri` before attaching the viewer fragment.
+- Use `view.post {}` for UI changes that require the PDF to be loaded.
+- Overlay views should not intercept touch unless actively annotating.
+
+## What an AI agent should do when editing
+
+- Prefer changes that keep the `fdroid` flavor 100% FOSS.
+- When updating versions:
+  - Update `APP_VERSION_CODE` / `APP_VERSION_NAME` in `gradle.properties`.
+  - Tag releases in git (e.g., `vX.Y.Z`).
+  - Update F-Droid metadata `CurrentVersion` / `CurrentVersionCode` accordingly.
+- When touching F-Droid metadata:
+  - Ensure `fdroid rewritemeta` produces no diff (canonical formatting).
 
 ---
 
-Last Updated: 2024-12-30
+Last Updated: 2026-05-07
