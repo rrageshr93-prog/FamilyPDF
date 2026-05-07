@@ -179,9 +179,12 @@ class PdfViewerViewModel : ViewModel() {
         synchronized(activeBitmaps) {
             uiBitmapRefs.remove(pageIndex)?.let { oldBitmap ->
                 activeBitmaps.remove(oldBitmap)
-                safeRecycle(oldBitmap)
             }
         }
+    }
+
+    fun releasePage(pageIndex: Int) {
+        unregisterBitmap(pageIndex)
     }
 
     fun loadPdf(context: Context, uri: Uri, password: String = "", savedPage: Int = 0) {
@@ -268,8 +271,8 @@ class PdfViewerViewModel : ViewModel() {
     
     // Retry a failed page render
     fun retryPage(pageIndex: Int) {
-        bitmapCache.remove(pageIndex)
         unregisterBitmap(pageIndex)
+        bitmapCache.remove(pageIndex)
     }
     
     fun getPageState(pageIndex: Int): PageRenderState {
@@ -342,9 +345,9 @@ class PdfViewerViewModel : ViewModel() {
         }
         
         override fun entryRemoved(evicted: Boolean, key: Int, oldValue: Bitmap, newValue: Bitmap?) {
-            // DO NOT recycle here - only drop the reference
-            // The bitmap lifecycle is managed by activeBitmaps reference counting
-            // Recycling happens through safeRecycle() only when not in use by UI
+            if (evicted) {
+                safeRecycle(oldValue)
+            }
         }
     }
     

@@ -1,11 +1,8 @@
-Build flavor implementation for dual-store deployment
+Bug fixes in PDF Viewer and PDF Compressor.
 
-• Implemented Play Store and F-Droid build flavors
-• Play Store: ML Kit OCR (smaller APK + runtime download)
-• F-Droid: Tesseract OCR (larger APK, fully open source)
-• OCR feature available in both builds
-• Improved deployment workflow with better error handling
-• Fixed scrolling bug on first page when zoomed in.
-• Added "Print" feature to PDF viewer menu.
-• Improved memory handling for large PDFs and background operations.
-• Improved memory and resource handling during app minimization for rotation and page numbering operations.
+PDF Viewer: Fixed infinite loading on some files. Zoomed-in scrolling now works 
+correctly across all pages. Fixed ANR/freeze when changing pages while zoomed. 
+Double-tap zoom now focuses on the tapped area accurately.
+
+PDF Compressor: Fixed issue where compressing text-heavy PDFs would return the 
+original file unchanged. Compression now works correctly across all PDF types.

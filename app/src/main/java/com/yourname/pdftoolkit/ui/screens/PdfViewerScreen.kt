@@ -31,10 +31,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -73,8 +69,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.yourname.pdftoolkit.data.SafUriManager
 import com.yourname.pdftoolkit.util.PrintUtils
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
-import kotlin.math.abs
 
 /**
  * PDF Viewer Screen with annotation support.
@@ -138,33 +132,6 @@ fun PdfViewerScreen(
     // Track visible page based on scroll position
     LaunchedEffect(listState.firstVisibleItemIndex) {
         currentPage = listState.firstVisibleItemIndex + 1
-    }
-
-    // Reset zoom when changing pages for better UX
-    LaunchedEffect(currentPage) {
-        if (scale != 1f || offsetX != 0f || offsetY != 0f) {
-            // Capture start values before animation to prevent feedback loop
-            val startScale = scale
-            val startOffsetX = offsetX
-            val startOffsetY = offsetY
-            // Animate zoom reset smoothly
-            androidx.compose.animation.core.animate(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = androidx.compose.animation.core.tween(durationMillis = 300)
-            ) { progress, _ ->
-                scale = 1f + (startScale - 1f) * (1f - progress)
-                offsetX = startOffsetX * (1f - progress)
-                offsetY = startOffsetY * (1f - progress)
-            }
-        }
-    }
-    
-    // Force show controls when zoomed so navigation buttons remain accessible
-    LaunchedEffect(scale) {
-        if (scale > 1.05f) {
-            showControls = true
-        }
     }
 
     // Handle Save State
@@ -620,20 +587,22 @@ fun PdfViewerScreen(
                         detectTapGestures(
                             onTap = { showControls = !showControls },
                             onDoubleTap = { tapOffset ->
-                                // Double-tap zooms smoothly
                                 val newScale = if (scale >= 2f) 1f else 2.5f
-                                
+
                                 if (newScale > 1f) {
-                                    // Zoom in towards tap point
+                                    // With top-center transform origin:
+                                    // X pivots around center (width/2), Y pivots around top (0)
                                     val centerX = viewportSize.width / 2f
-                                    val centerY = viewportSize.height / 2f
                                     val focusX = tapOffset.x - centerX
-                                    val focusY = tapOffset.y - centerY
-                                    
-                                    offsetX = -focusX * (newScale - 1f)
-                                    offsetY = -focusY * (newScale - 1f)
+                                    // Shift content so the tapped point stays under finger
+                                    val newOffsetX = (-focusX * (newScale - 1f))
+                                        .coerceIn(
+                                            -((viewportSize.width * newScale - viewportSize.width) / 2f),
+                                            (viewportSize.width * newScale - viewportSize.width) / 2f
+                                        )
+                                    offsetX = newOffsetX
+                                    offsetY = 0f
                                 } else {
-                                    // Zoom out - reset
                                     offsetX = 0f
                                     offsetY = 0f
                                 }
@@ -669,10 +638,10 @@ fun PdfViewerScreen(
                         loadPage = { viewModel.loadPage(it) },
                         getPageState = { viewModel.getPageState(it) },
                         onRetryPage = { viewModel.retryPage(it) },
+                        onReleasePage = { viewModel.releasePage(it) },
                         scale = scale,
                         onScaleChange = { scale = it },
                         offsetX = offsetX,
-                        offsetY = offsetY,
                         onOffsetChange = { x, y ->
                             offsetX = x
                             offsetY = y
@@ -1108,10 +1077,10 @@ private fun PdfPagesContent(
     loadPage: suspend (Int) -> Bitmap?,
     getPageState: (Int) -> PdfViewerViewModel.PageRenderState,
     onRetryPage: (Int) -> Unit,
+    onReleasePage: (Int) -> Unit,
     scale: Float,
     onScaleChange: (Float) -> Unit,
     offsetX: Float,
-    offsetY: Float,
     onOffsetChange: (Float, Float) -> Unit,
     listState: LazyListState,
     isEditMode: Boolean,
@@ -1127,46 +1096,15 @@ private fun PdfPagesContent(
     searchState: SearchState,
     onViewportSizeChange: (IntSize) -> Unit
 ) {
-    val scope = rememberCoroutineScope()
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
-
-    // Track zoom state to detect when zoom starts
-    val isZoomed = scale > 1.05f
-    var wasZoomed by remember { mutableStateOf(false) }
-
-    // When zoom starts, capture LazyColumn scroll position and bake into offsetY
-    // This prevents the content from snapping back to top
-    LaunchedEffect(isZoomed) {
-        if (isZoomed && !wasZoomed) {
-            // Zoom just started - capture current scroll offset
-            val scrollOffset = listState.firstVisibleItemScrollOffset.toFloat()
-            val itemIndex = listState.firstVisibleItemIndex
-            // Calculate total offset based on item index and scroll offset
-            // This represents how far down the user has scrolled
-            val estimatedItemHeight = if (pageSize.height > 0) pageSize.height.toFloat() else 1000f
-            val totalScrollOffset = (itemIndex.toFloat() * estimatedItemHeight * scale) + (scrollOffset * scale)
-            // Set initial offsetY to negative of scroll offset to keep content in place
-            onOffsetChange(offsetX, -totalScrollOffset.coerceAtMost(0f))
-        } else if (!isZoomed && wasZoomed) {
-            // Zoom just ended (reset to 1x) - scroll LazyColumn to current position
-            // This ensures the list is at the correct position after zoom out
-            val currentItem = listState.firstVisibleItemIndex
-            scope.launch {
-                listState.scrollToItem(currentItem)
-            }
-        }
-        wasZoomed = isZoomed
-    }
 
     // Use rememberUpdatedState to get latest values inside pointerInput without restarting
     val currentScale by rememberUpdatedState(scale)
     val currentOffsetX by rememberUpdatedState(offsetX)
-    val currentOffsetY by rememberUpdatedState(offsetY)
     val currentOnScaleChange by rememberUpdatedState(onScaleChange)
     val currentOnOffsetChange by rememberUpdatedState(onOffsetChange)
     val currentContainerSize by rememberUpdatedState(containerSize)
-    val currentPageSize by rememberUpdatedState(pageSize)
 
     Box(
         modifier = Modifier
@@ -1194,28 +1132,21 @@ private fun PdfPagesContent(
                                 // Calculate new scale
                                 val newScale = (currentScale * zoomChange).coerceIn(1f, 5f)
 
-                                // Calculate bounds for scaled content panning
                                 val containerWidth = currentContainerSize.width.toFloat()
-                                val containerHeight = currentContainerSize.height.toFloat()
 
-                                // For X: center-aligned scaling
-                                val maxOffsetX = (containerWidth * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                // X bounds: content wider than container after scaling
+                                val scaledContentWidth = containerWidth * newScale
+                                val maxOffsetX = ((scaledContentWidth - containerWidth) / 2f).coerceAtLeast(0f)
 
-                                // For Y: calculate based on total content height to allow full vertical panning
-                                // Total content height = page height * total pages * scale
-                                val estimatedPageHeight = if (currentPageSize.height > 0) currentPageSize.height.toFloat() else containerHeight
-                                val totalContentHeight = estimatedPageHeight * totalPages * newScale
-                                val maxOffsetY = (totalContentHeight - containerHeight).coerceAtLeast(0f)
-
-                                // Update scale
                                 currentOnScaleChange(newScale)
 
-                                // Update offsets with proper bounds clamping
                                 if (newScale > 1f) {
-                                    val newOffsetX = (currentOffsetX + panChange.x).coerceIn(-maxOffsetX, maxOffsetX)
-                                    // Allow panning in both Y directions within bounds
-                                    val newOffsetY = (currentOffsetY + panChange.y).coerceIn(-maxOffsetY, 0f)
-                                    currentOnOffsetChange(newOffsetX, newOffsetY)
+                                    val newOffsetX = (currentOffsetX + panChange.x)
+                                        .coerceIn(-maxOffsetX, maxOffsetX)
+                                    currentOnOffsetChange(newOffsetX, 0f)
+                                    if (panChange.y != 0f) {
+                                        listState.dispatchRawDelta(-panChange.y)
+                                    }
                                 } else {
                                     currentOnOffsetChange(0f, 0f)
                                 }
@@ -1234,14 +1165,14 @@ private fun PdfPagesContent(
                     scaleX = scale
                     scaleY = scale
                     translationX = offsetX
-                    translationY = offsetY
+                    translationY = 0f
                     transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0f) // Top-center anchor
                 }
         ) {
             LazyColumn(
                 state = listState,
-                // Enable scroll only if not drawing AND not zoomed (scale <= 1.05f)
-                userScrollEnabled = (!isEditMode || selectedTool == AnnotationTool.NONE) && scale <= 1.05f,
+                // Keep vertical scrolling owned by LazyColumn so zoomed pages never pan into blank viewport space.
+                userScrollEnabled = !isEditMode || selectedTool == AnnotationTool.NONE,
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 contentPadding = PaddingValues(vertical = 8.dp)
@@ -1281,7 +1212,8 @@ private fun PdfPagesContent(
                             }
                         },
                         pageState = getPageState(index),
-                        onRetry = onRetryPage
+                        onRetry = onRetryPage,
+                        onRelease = onReleasePage
                     )
 
                     Text(
@@ -1314,7 +1246,8 @@ private fun PdfPageWithAnnotations(
     onPageSizeChanged: ((IntSize) -> Unit)? = null,
     // Page state for error handling
     pageState: PdfViewerViewModel.PageRenderState = PdfViewerViewModel.PageRenderState.Idle,
-    onRetry: (Int) -> Unit = {}
+    onRetry: (Int) -> Unit = {},
+    onRelease: (Int) -> Unit = {}
 ) {
     var size by remember { mutableStateOf(IntSize.Zero) }
     val haptic = LocalHapticFeedback.current
@@ -1322,6 +1255,12 @@ private fun PdfPageWithAnnotations(
     // Load bitmap lazily
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = pageIndex) {
         value = loadPage(pageIndex)
+    }
+
+    DisposableEffect(pageIndex) {
+        onDispose {
+            onRelease(pageIndex)
+        }
     }
 
     // Shimmer animation for loading state
