@@ -31,9 +31,9 @@ import java.io.OutputStream
  */
 enum class CompressionLevel(val dpi: Float, val jpegQuality: Float, val description: String) {
     LOW(150f, 0.85f, "Low - Minor size reduction"),
-    MEDIUM(120f, 0.70f, "Medium - Balanced"),
-    HIGH(96f, 0.55f, "High - Significant reduction"),
-    MAXIMUM(72f, 0.40f, "Maximum - Smallest size")
+    MEDIUM(135f, 0.70f, "Medium - Balanced"),
+    HIGH(110f, 0.55f, "High - Significant reduction"),
+    MAXIMUM(85f, 0.40f, "Maximum - Smallest size")
 }
 
 /**
@@ -81,6 +81,29 @@ data class CompressionProfile(
  * result to the original and keeps the smaller version.
  */
 class PdfCompressor {
+
+    /**
+     * Quick check: does this PDF have any embedded raster images?
+     * Used to decide compression strategy without loading the full document.
+     */
+    private fun pdfHasImages(file: File): Boolean {
+        return try {
+            PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly()).use { doc ->
+                for (pageIndex in 0 until doc.numberOfPages) {
+                    val resources = doc.getPage(pageIndex).resources ?: continue
+                    val names = resources.xObjectNames?.toList() ?: continue
+                    for (name in names) {
+                        try {
+                            if (resources.getXObject(name) is PDImageXObject) return true
+                        } catch (e: Exception) { continue }
+                    }
+                }
+                false
+            }
+        } catch (e: Exception) {
+            false // assume no images if we can't read
+        }
+    }
     
     /**
      * Compress a PDF file using the optimal strategy.
@@ -108,8 +131,6 @@ class PdfCompressor {
             ensureActive()
             onProgress(0.05f)
             
-            var detectedPageCount: Int? = null
-
             // Create a temp file to avoid loading everything into memory
             val cacheDir = File(context.cacheDir, "compress_cache")
             if (!cacheDir.exists()) cacheDir.mkdirs()
@@ -125,92 +146,75 @@ class PdfCompressor {
             )
             
             val originalSize = tempFile.length()
-            
-            // Skip compression for very small files (< 50KB)
-            if (originalSize < 50 * 1024) {
+
+            // Skip for very small files
+            if (originalSize < 10 * 1024) {
                 onProgress(1.0f)
-                tempFile.inputStream().use { input ->
-                    input.copyTo(outputStream)
-                }
+                tempFile.inputStream().use { it.copyTo(outputStream) }
                 outputStream.flush()
-                return@withContext Result.success(
-                    CompressionResult(
-                        originalSize = originalSize,
-                        compressedSize = originalSize,
-                        compressionRatio = 1f,
-                        timeTakenMs = System.currentTimeMillis() - startTime,
-                        pagesProcessed = countPages(tempFile),
-                        strategyUsed = CompressionStrategy.IMAGE_OPTIMIZATION
-                    )
-                )
+                return@withContext Result.success(CompressionResult(
+                    originalSize = originalSize, compressedSize = originalSize,
+                    compressionRatio = 1f, timeTakenMs = System.currentTimeMillis() - startTime,
+                    pagesProcessed = countPages(tempFile),
+                    strategyUsed = CompressionStrategy.IMAGE_OPTIMIZATION
+                ))
             }
-            
+
             onProgress(0.10f)
-            
-            // Try image optimization first (preserves text quality)
-            // Note: tryImageOptimization writes to a temp file internally if successful
-            val optimizedFile = tryImageOptimization(context, tempFile, profile, onProgress)
-            
-            onProgress(0.55f)
-            
-            // Try full re-render approach for potentially better compression
-            val rerenderedFile = tryFullRerender(context, tempFile, profile) { progress ->
-                onProgress(0.55f + progress * 0.35f)
-            }
-            
-            onProgress(0.90f)
-            
-            // Collect all valid compression results
-            // List of Pair<File, Strategy>
-            val candidates = mutableListOf<Pair<File, CompressionStrategy>>()
-            
-            if (optimizedFile != null && optimizedFile.length() < originalSize) {
-                candidates.add(optimizedFile to CompressionStrategy.IMAGE_OPTIMIZATION)
-            }
-            if (rerenderedFile != null && rerenderedFile.length() < originalSize) {
-                candidates.add(rerenderedFile to CompressionStrategy.FULL_RERENDER)
-            }
-            
-            // Select the smallest result that's still smaller than original
-            val bestMatch = if (candidates.isNotEmpty()) {
-                candidates.minByOrNull { it.first.length() }!!
+
+            // Detect whether PDF has embedded images to choose strategy
+            val hasImages = pdfHasImages(tempFile)
+
+            val resultFile: File?
+            val strategyUsed: CompressionStrategy
+
+            if (hasImages) {
+                // Image-heavy: try image optimization first, fall back to rerender
+                val opt = tryImageOptimization(context, tempFile, profile, onProgress)
+                resultFile = if (opt != null && opt.length() < originalSize) {
+                    strategyUsed = CompressionStrategy.IMAGE_OPTIMIZATION
+                    opt
+                } else {
+                    opt?.delete()
+                    onProgress(0.55f)
+                    val rerender = tryFullRerender(context, tempFile, profile) { p ->
+                        onProgress(0.55f + p * 0.40f)
+                    }
+                    strategyUsed = CompressionStrategy.FULL_RERENDER
+                    if (rerender != null && rerender.length() < originalSize) rerender
+                    else { rerender?.delete(); null }
+                }
             } else {
-                null
+                // Text/vector only: rerender is the only option that can reduce size
+                // (image optimization does nothing with no images)
+                onProgress(0.30f)
+                val rerender = tryFullRerender(context, tempFile, profile) { p ->
+                    onProgress(0.30f + p * 0.60f)
+                }
+                strategyUsed = CompressionStrategy.FULL_RERENDER
+                resultFile = if (rerender != null && rerender.length() < originalSize) rerender
+                else { rerender?.delete(); null }
             }
-            
-            val finalFile = bestMatch?.first ?: tempFile
-            val strategyUsed = bestMatch?.second ?: CompressionStrategy.IMAGE_OPTIMIZATION
 
             onProgress(0.95f)
-            
-            // Write the best result to output
-            finalFile.inputStream().use { input ->
-                input.copyTo(outputStream)
-            }
-            outputStream.flush()
-            
-            onProgress(1.0f)
-            
-            val timeTaken = System.currentTimeMillis() - startTime
-            val pagesProcessed = detectedPageCount ?: countPages(finalFile)
-            val compressedSize = finalFile.length()
 
-            // Clean up temporary result files
-            if (optimizedFile != null && optimizedFile != finalFile) optimizedFile.delete()
-            if (rerenderedFile != null && rerenderedFile != finalFile) rerenderedFile.delete()
-            // We delete finalFile later if it was a temp file created by optimization
-            if (finalFile != tempFile) finalFile.delete()
-            
-            Result.success(
-                CompressionResult(
-                    originalSize = originalSize,
-                    compressedSize = compressedSize,
-                    compressionRatio = if (originalSize > 0) compressedSize.toFloat() / originalSize else 1f,
-                    timeTakenMs = timeTaken,
-                    pagesProcessed = pagesProcessed,
-                    strategyUsed = strategyUsed
-                )
-            )
+            val finalFile = resultFile ?: tempFile
+            finalFile.inputStream().use { it.copyTo(outputStream) }
+            outputStream.flush()
+
+            onProgress(1.0f)
+
+            val compressedSize = finalFile.length()
+            if (resultFile != null && resultFile != tempFile) resultFile.delete()
+
+            return@withContext Result.success(CompressionResult(
+                originalSize = originalSize,
+                compressedSize = compressedSize,
+                compressionRatio = if (originalSize > 0) compressedSize.toFloat() / originalSize else 1f,
+                timeTakenMs = System.currentTimeMillis() - startTime,
+                pagesProcessed = countPages(finalFile),
+                strategyUsed = strategyUsed
+            ))
             
         } catch (e: CancellationException) {
             throw e
@@ -269,8 +273,14 @@ class PdfCompressor {
                 onProgress(pageProgress)
             }
             
-            document.save(outputFile)
-            outputFile
+            // Don't save if nothing was actually optimized - output would be same size or larger
+            if (imagesOptimized == 0) {
+                outputFile.delete()
+                null
+            } else {
+                document.save(outputFile)
+                outputFile
+            }
             
         } catch (e: CancellationException) {
             outputFile.delete()
@@ -360,8 +370,8 @@ class PdfCompressor {
             // Calculate target dimensions based on compression level
             val scaleFactor = profile.scaleFactor
             
-            val targetWidth = (originalImage.width * scaleFactor).toInt().coerceAtLeast(100)
-            val targetHeight = (originalImage.height * scaleFactor).toInt().coerceAtLeast(100)
+            val targetWidth = (originalImage.width * scaleFactor).toInt().coerceAtLeast(32)
+            val targetHeight = (originalImage.height * scaleFactor).toInt().coerceAtLeast(32)
             
             // Create scaled bitmap
             val scaledBitmap = if (scaleFactor < 1.0f) {
@@ -374,10 +384,10 @@ class PdfCompressor {
                 // Create JPEG with specified quality
                 JPEGFactory.createFromImage(document, scaledBitmap, profile.jpegQuality)
             } finally {
-                if (scaledBitmap != originalImage) {
+                if (scaledBitmap !== originalImage) {
                     scaledBitmap.recycle()
                 }
-                originalImage.recycle()
+                // Don't recycle originalImage - it's managed by PDImageXObject
             }
         } catch (e: Exception) {
             null
@@ -415,15 +425,21 @@ class PdfCompressor {
                 // Render page to bitmap at compression DPI
                 val bitmap = renderer.renderImageWithDPI(pageIndex, profile.dpi)
                 
+                // Create white-backed bitmap to handle transparent PDFs
+                val whiteBitmap = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(whiteBitmap)
+                canvas.drawColor(android.graphics.Color.WHITE)
+                canvas.drawBitmap(bitmap, 0f, 0f, null)
+                
                 try {
                     // Create new page matching original dimensions
                     val newPage = PDPage(pageRect)
                     outputDocument.addPage(newPage)
                     
-                    // Create compressed JPEG image
+                    // Create compressed JPEG image using white-backed bitmap
                     val pdImage = JPEGFactory.createFromImage(
-                        outputDocument, 
-                        bitmap, 
+                        outputDocument,
+                        whiteBitmap,
                         profile.jpegQuality
                     )
                     
@@ -439,6 +455,7 @@ class PdfCompressor {
                     }
                 } finally {
                     bitmap.recycle()
+                    whiteBitmap.recycle()
                 }
                 
                 onProgress((pageIndex + 1).toFloat() / totalPages)
@@ -512,12 +529,12 @@ class PdfCompressor {
         val clamped = qualityPercent.coerceIn(0, 100)
         val ratio = clamped / 100f
 
-        val dpi = 150f - (78f * ratio) // 150 -> 72
+        val dpi = 150f - (65f * ratio) // 150 -> 85
         val jpegQuality = 0.9f - (0.52f * ratio) // 0.90 -> 0.38
-        val scaleFactor = 1.0f - (0.45f * ratio) // 1.00 -> 0.55
+        val scaleFactor = (1.0f - (0.45f * ratio)).coerceAtLeast(0.55f) // 1.00 -> 0.55, never below 0.55
 
         return CompressionProfile(
-            dpi = dpi.coerceIn(72f, 150f),
+            dpi = dpi.coerceIn(85f, 150f),
             jpegQuality = jpegQuality.coerceIn(0.35f, 0.92f),
             scaleFactor = scaleFactor.coerceIn(0.55f, 1.0f)
         )

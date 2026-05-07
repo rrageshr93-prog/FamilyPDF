@@ -134,7 +134,7 @@ fun CompressScreen(
                                         append("Compressed PDF saved.\n\n")
                                         append("Before: ${file.formattedSize}\n")
                                         append("After: ${compressedInfo?.formattedSize ?: "Unknown"}\n\n")
-                                        append("Note: This PDF may already be optimized or contain mostly text.")
+                                        append("Note: No size reduction achieved. This PDF likely contains mostly text or vector content, which cannot be compressed further by image optimization. Try a higher compression level or the file may already be at minimum size.")
                                     }
                                 }
                                 selectedFile = null
@@ -199,7 +199,7 @@ fun CompressScreen(
                                         append("Compressed PDF saved.\n\n")
                                         append("Before: ${originalFile.formattedSize}\n")
                                         append("After: ${FileManager.formatFileSize(compressedSize)}\n\n")
-                                        append("Note: This PDF may already be optimized.\n\n")
+                                        append("Note: No size reduction achieved. This PDF likely contains mostly text or vector content, which cannot be compressed further by image optimization. Try a higher compression level or the file may already be at minimum size.\n\n")
                                     }
                                     append("Saved to: ${OutputFolderManager.getOutputFolderPath(context)}/${outputResult.outputFile.fileName}")
                                 }

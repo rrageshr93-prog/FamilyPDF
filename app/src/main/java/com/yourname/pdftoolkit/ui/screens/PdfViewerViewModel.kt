@@ -27,8 +27,6 @@ import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
-import android.os.Handler
-import android.os.Looper
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -104,7 +102,6 @@ class PdfViewerViewModel : ViewModel() {
 
     companion object {
         const val RENDER_SCALE = 1.5f  // ~108 DPI for text-based PDFs
-        const val RENDER_SCALE_SCANNED = 2.5f  // ~180 DPI for scanned/image-heavy PDFs
     }
 
     private val _uiState = MutableStateFlow<PdfViewerUiState>(PdfViewerUiState.Idle)
@@ -142,9 +139,6 @@ class PdfViewerViewModel : ViewModel() {
     // Search Job Control
     private var searchJob: Job? = null
     
-    // Render job tracking to cancel in-flight renders for same page
-    private val renderJobs = mutableMapOf<Int, Job>()
-    
     // Page state tracking for error handling
     sealed class PageRenderState {
         object Idle : PageRenderState()
@@ -152,7 +146,7 @@ class PdfViewerViewModel : ViewModel() {
         data class Loaded(val bitmap: Bitmap) : PageRenderState()
         data class Error(val pageIndex: Int, val message: String) : PageRenderState()
     }
-    private val _pageStates = mutableMapOf<Int, PageRenderState>()
+    private val _pageStates = MutableStateFlow<Map<Int, PageRenderState>>(emptyMap())
     
     // Current page tracking for memory management
     private var _currentPage: Int = 0
@@ -191,7 +185,8 @@ class PdfViewerViewModel : ViewModel() {
     }
 
     fun loadPdf(context: Context, uri: Uri, password: String = "", savedPage: Int = 0) {
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _uiState.value = PdfViewerUiState.Loading
             try {
                 if (!PDFBoxResourceLoader.isReady()) {
@@ -269,43 +264,16 @@ class PdfViewerViewModel : ViewModel() {
     // Update current page for memory management
     fun updateCurrentPage(pageIndex: Int) {
         _currentPage = pageIndex
-        
-        // Evict pages far from current to save memory
-        viewModelScope.launch(Dispatchers.IO) {
-            val totalPages = (_uiState.value as? PdfViewerUiState.Loaded)?.totalPages ?: return@launch
-            if (totalPages > 10) {
-                // Remove pages more than 5 pages away from current
-                for (i in 0 until totalPages) {
-                    if (kotlin.math.abs(i - pageIndex) > 5) {
-                        bitmapCache.remove(i)
-                    }
-                }
-            }
-        }
     }
     
     // Retry a failed page render
     fun retryPage(pageIndex: Int) {
-        viewModelScope.launch {
-            // 1. Cancel any in-flight render job for this page
-            renderJobs[pageIndex]?.cancel()
-            // DO NOT recycle - let GC handle cancelled job's bitmap
-            renderJobs.remove(pageIndex)
-            
-            // 2. Unregister old bitmap from active set and clear state
-            unregisterBitmap(pageIndex)
-            _pageStates[pageIndex] = PageRenderState.Loading
-            
-            // 3. Remove from cache - cache.entryRemoved does NOT recycle
-            bitmapCache.remove(pageIndex)
-            
-            // 4. Start fresh render
-            loadPage(pageIndex)
-        }
+        bitmapCache.remove(pageIndex)
+        unregisterBitmap(pageIndex)
     }
     
     fun getPageState(pageIndex: Int): PageRenderState {
-        return _pageStates[pageIndex] ?: PageRenderState.Idle
+        return _pageStates.value[pageIndex] ?: PageRenderState.Idle
     }
 
     fun setTool(tool: PdfTool) {
@@ -380,161 +348,46 @@ class PdfViewerViewModel : ViewModel() {
         }
     }
     
-    private var prefetchJob: Job? = null
-    
-    /**
-     * Detect if a page is likely a scanned/image-heavy page by checking for XObject images
-     * in the page resources. Returns true if the page has embedded images.
-     */
-    private fun isScannedPage(pageIndex: Int): Boolean {
-        return try {
-            val doc = document ?: return false
-            if (pageIndex < 0 || pageIndex >= doc.numberOfPages) return false
-            
-            val page = doc.getPage(pageIndex)
-            val resources = page.resources
-            
-            // Check if page has XObject images
-            val xObjectNames = resources.xObjectNames?.toList() ?: emptyList()
-            xObjectNames.isNotEmpty()
-        } catch (e: Exception) {
-            false
-        }
-    }
+    private var loadJob: Job? = null
     
     suspend fun loadPage(pageIndex: Int): Bitmap? {
-        // Page bounds check
         val totalPages = (_uiState.value as? PdfViewerUiState.Loaded)?.totalPages ?: return null
-        if (pageIndex < 0 || pageIndex >= totalPages) {
-            Log.w("PdfViewerVM", "Invalid page index: $pageIndex, total pages: $totalPages")
-            return null
-        }
-        
-        // Check cache first - register as active for UI
-        bitmapCache.get(pageIndex)?.let { cachedBitmap ->
-            registerActiveBitmap(pageIndex, cachedBitmap)
-            _pageStates[pageIndex] = PageRenderState.Loaded(cachedBitmap)
-            return cachedBitmap
-        }
-        
-        // Cancel any existing render job for this page
-        renderJobs[pageIndex]?.cancel()
-        // DO NOT recycle cancelled job's bitmap - let GC handle it
-        renderJobs.remove(pageIndex)
-        
-        // Set loading state
-        _pageStates[pageIndex] = PageRenderState.Loading
-        
-        // Create new render job
-        val job = viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val bitmap = renderPageInternal(pageIndex)
-                if (bitmap != null) {
-                    registerActiveBitmap(pageIndex, bitmap)
-                    _pageStates[pageIndex] = PageRenderState.Loaded(bitmap)
-                } else {
-                    _pageStates[pageIndex] = PageRenderState.Error(pageIndex, "Failed to render page")
-                }
-            } catch (e: CancellationException) {
-                // Re-throw cancellation - do not recycle, let GC handle
-                throw e
-            } catch (e: Exception) {
-                Log.e("PdfViewerVM", "Render failed for page $pageIndex: ${e.message}", e)
-                _pageStates[pageIndex] = PageRenderState.Error(pageIndex, e.message ?: "Render error")
-            } finally {
-                renderJobs.remove(pageIndex)
+        if (pageIndex < 0 || pageIndex >= totalPages) return null
+
+        // Check cache first
+        bitmapCache.get(pageIndex)?.let { cached ->
+            if (!cached.isRecycled) {
+                registerActiveBitmap(pageIndex, cached)
+                return cached
             }
+            bitmapCache.remove(pageIndex)
         }
-        
-        renderJobs[pageIndex] = job
-        
-        // Wait for the render job to complete
-        job.join()
-        
-        // Trigger prefetch for adjacent pages
-        prefetchPages(pageIndex)
-        
-        return bitmapCache.get(pageIndex)?.also { registerActiveBitmap(pageIndex, it) }
-    }
-    
-    private suspend fun renderPageInternal(pageIndex: Int): Bitmap? {
-        return withContext(Dispatchers.IO) {
-            ensureActive()
-            
-            documentMutex.withLock {
-                ensureActive()
-                
-                try {
-                    // Double check cache inside lock
-                    bitmapCache.get(pageIndex)?.let { return@withLock it }
-                    
+
+        // Render directly - no inner launch/join, no deadlock
+        return try {
+            val bitmap = withContext(Dispatchers.IO) {
+                documentMutex.withLock {
+                    // Double-check cache inside lock
+                    bitmapCache.get(pageIndex)?.takeIf { !it.isRecycled }?.let { return@withLock it }
+
                     val renderer = pdfRenderer ?: return@withLock null
-                    
-                    // Use higher scale for scanned/image-heavy pages
-                    val scale = if (isScannedPage(pageIndex)) {
-                        Log.d("PdfViewerVM", "Page $pageIndex has images, using higher render scale: $RENDER_SCALE_SCANNED")
-                        RENDER_SCALE_SCANNED
-                    } else {
-                        RENDER_SCALE
-                    }
-                    
-                    ensureActive()
-                    
-                    val bitmap = renderer.renderImage(pageIndex, scale)
-                    
-                    if (bitmap != null) {
-                        bitmapCache.put(pageIndex, bitmap)
-                    }
-                    bitmap
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.e("PdfViewerVM", "Error rendering page $pageIndex", e)
-                    null
-                }
-            }
-        }
-    }
-    
-    private fun prefetchPages(currentPage: Int) {
-        val totalPages = (_uiState.value as? PdfViewerUiState.Loaded)?.totalPages ?: return
-        
-        prefetchJob?.cancel()
-        prefetchJob = viewModelScope.launch(Dispatchers.IO) {
-            // Calculate prefetch count based on available memory
-            val runtime = Runtime.getRuntime()
-            val availableMemMb = (runtime.maxMemory() - runtime.totalMemory() + runtime.freeMemory()) / 1048576
-            val prefetchCount = when {
-                availableMemMb > 200 -> 3
-                availableMemMb > 100 -> 2
-                else -> 1
-            }
-            
-            val range = (-prefetchCount..prefetchCount).filter { it != 0 }.map { currentPage + it }
-            
-            for (page in range) {
-                if (page in 0 until totalPages) {
-                    if (bitmapCache.get(page) == null && _pageStates[page] !is PageRenderState.Error) {
-                        yield()
-                        
-                        try {
-                            documentMutex.withLock {
-                                ensureActive()
-                                if (bitmapCache.get(page) == null) {
-                                    pdfRenderer?.renderImage(page, RENDER_SCALE)?.let { bitmap ->
-                                        bitmapCache.put(page, bitmap)
-                                    }
-                                }
-                            }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            // Ignore prefetch errors silently
-                            Log.d("PdfViewerVM", "Prefetch failed for page $page: ${e.message}")
+                    try {
+                        renderer.renderImage(pageIndex, RENDER_SCALE)?.also { bm ->
+                            bitmapCache.put(pageIndex, bm)
                         }
+                    } catch (e: Exception) {
+                        Log.e("PdfViewerVM", "Render failed page $pageIndex: ${e.message}")
+                        null
                     }
                 }
             }
+            if (bitmap != null) registerActiveBitmap(pageIndex, bitmap)
+            bitmap
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("PdfViewerVM", "loadPage error page $pageIndex: ${e.message}")
+            null
         }
     }
 
@@ -586,10 +439,10 @@ class PdfViewerViewModel : ViewModel() {
                     try {
                         val lowerQuery = query.lowercase()
 
-                        // Check if page is scanned (image-based)
-                        if (!hasExtractableText(doc, pageIndex) || isScannedPage(pageIndex)) {
+                        // Check if page has extractable text
+                        if (!hasExtractableText(doc, pageIndex)) {
                             scannedPages.add(pageIndex)
-                            continue // Skip scanned pages - can't search them
+                            continue // Skip pages that can't be searched
                         }
 
                         // Check cache first
@@ -945,32 +798,15 @@ class PdfViewerViewModel : ViewModel() {
     }
 
     override fun onCleared() {
-        // Cancel all render jobs first
-        renderJobs.values.forEach { it.cancel() }
-        renderJobs.clear()
-        
-        // Use Handler to defer cleanup - allows Compose to finish drawing current frame
-        Handler(Looper.getMainLooper()).postDelayed({
-            viewModelScope.launch(Dispatchers.IO) {
-                // Unregister all active bitmaps before recycling
-                synchronized(activeBitmaps) {
-                    uiBitmapRefs.values.forEach { bitmap ->
-                        activeBitmaps.remove(bitmap)
-                        if (!bitmap.isRecycled) {
-                            bitmap.recycle()
-                        }
-                    }
-                    uiBitmapRefs.clear()
-                    activeBitmaps.clear()
-                }
-                
-                // Clear cache without recycling (already handled above)
-                bitmapCache.evictAll()
-                
-                closeDocument()
-            }
-        }, 500) // 500ms delay ensures Compose is done drawing
-        
         super.onCleared()
+        viewModelScope.launch(Dispatchers.IO) {
+            synchronized(activeBitmaps) {
+                uiBitmapRefs.values.forEach { if (!it.isRecycled) it.recycle() }
+                uiBitmapRefs.clear()
+                activeBitmaps.clear()
+            }
+            bitmapCache.evictAll()
+            closeDocument()
+        }
     }
 }
