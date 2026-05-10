@@ -1,1 +1,1 @@
-Privacy-first offline PDF utility with merge, split, compress, OCR, and more
+All-in-one PDF and image toolkit for Android
