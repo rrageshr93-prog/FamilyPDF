@@ -24,39 +24,52 @@ fun HomeScreen(navController: NavController) {
                 .padding(paddingValues)
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.Center
         ) {
-            Spacer(modifier = Modifier.height(40.dp))
-
             Text(
                 text = "FamilyPDF",
                 style = MaterialTheme.typography.headlineLarge
             )
-
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
             Text(
                 text = "Made with ❤️ by RR",
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary
             )
-
+            
             Text(
                 text = "For my family",
-                style = MaterialTheme.typography.bodyLarge
+                style = MaterialTheme.typography.bodyMedium
             )
 
-            Spacer(modifier = Modifier.height(40.dp))
+            Spacer(modifier = Modifier.height(48.dp))
 
-            // Big friendly buttons
-            Button(onClick = { navController.navigate("pdf_viewer") }, modifier = Modifier.fillMaxWidth()) {
+            // Main Action Buttons - Big and Family Friendly
+            Button(
+                onClick = { navController.navigate("pdf_viewer") },
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
                 Text("📄 Open a PDF", style = MaterialTheme.typography.titleMedium)
             }
 
-            Button(onClick = { navController.navigate("tools") }, modifier = Modifier.fillMaxWidth()) {
-                Text("🛠️ All Tools", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = { navController.navigate("tools") },
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
+                Text("🛠️ Tools", style = MaterialTheme.typography.titleMedium)
             }
 
-            Button(onClick = { navController.navigate("sign") }, modifier = Modifier.fillMaxWidth()) {
-                Text("✍️ Sign Document", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedButton(
+                onClick = { navController.navigate("sign") },
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
+                Text("✍️ Sign a Document")
             }
         }
     }
