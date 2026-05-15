@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PDF Toolkit</string>
+    <string name="app_name">FamilyPDF</string>
+    <string name="app_name_full">FamilyPDF</string>
+    
+    <string name="made_with">Made with ❤️ by RR</string>
+    <string name="app_description">Free offline PDF editor for the family</string>
+    <string name="app_mission">Simple, private, and always free.</string>
 </resources>
