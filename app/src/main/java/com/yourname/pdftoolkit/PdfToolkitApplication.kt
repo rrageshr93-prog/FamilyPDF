@@ -14,8 +14,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 /**
- * Application class for PDF Toolkit.
- * Initializes PdfBox-Android on startup and manages cache cleanup.
+ * FamilyPDF Application Class
+ * Made with ❤️ by RR for the family
  */
 class PdfToolkitApplication : Application() {
     
@@ -24,32 +24,30 @@ class PdfToolkitApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         
+        Log.d("FamilyPDF", "🚀 FamilyPDF started - Made with ❤️ by RR")
+        
         // Initialize PdfBox-Android
         PDFBoxResourceLoader.init(applicationContext)
         
-        // Initialize In-App Review system for session tracking
+        // Initialize In-App Review
         ReviewIntegration.initialize(this)
         
-        // Initialize theme synchronously to avoid flicker
+        // Initialize theme
         runBlocking {
             val themeMode = ThemeManager.getThemeMode(applicationContext).first()
             ThemeManager.applyTheme(themeMode)
-            Log.d("PdfToolkit", "Theme initialized: $themeMode")
         }
         
-        // Auto-clean cache on startup (runs in background)
+        // Auto-clean cache
         applicationScope.launch {
             try {
-                // Clean old cache files (older than 24 hours)
                 val cleanedBytes = CacheManager.clearOldCache(applicationContext)
                 if (cleanedBytes > 0) {
-                    Log.d("PdfToolkit", "Auto-cleaned ${cleanedBytes / 1024} KB from cache")
+                    Log.d("FamilyPDF", "Cleaned ${cleanedBytes / 1024} KB cache")
                 }
-                
-                // Also clean PDF operation temp files
                 CacheManager.clearPdfOperationsCache(applicationContext)
             } catch (e: Exception) {
-                Log.e("PdfToolkit", "Cache cleanup failed", e)
+                Log.e("FamilyPDF", "Cache cleanup failed", e)
             }
         }
     }
