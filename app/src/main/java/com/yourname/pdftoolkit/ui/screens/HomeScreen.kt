@@ -13,13 +13,8 @@ import androidx.navigation.NavController
 fun HomeScreen(navController: NavController) {
     Scaffold(
         topBar = {
-            CenterAlignedTopAppBar(
-                title = { 
-                    Text(
-                        text = "FamilyPDF",
-                        style = MaterialTheme.typography.titleLarge
-                    )
-                }
+            TopAppBar(
+                title = { Text("FamilyPDF") }
             )
         }
     ) { innerPadding ->
