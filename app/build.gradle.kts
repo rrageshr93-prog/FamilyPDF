@@ -13,7 +13,7 @@ android {
     ndkVersion = "28.0.12433510"
 
     defaultConfig {
-        applicationId = "com.yourname.pdftoolkit
+        applicationId = "com.yourname.pdftoolkit" 
         minSdk = 26
         targetSdk = 35
         // Version code and name are read from gradle.properties for F-Droid compatibility
