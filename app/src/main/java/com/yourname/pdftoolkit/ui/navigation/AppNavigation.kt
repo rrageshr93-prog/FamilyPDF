@@ -34,7 +34,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navArgument
-import com.familypdf.app.BuildConfig
+import com.pdftoolkit.app.BuildConfig
 import com.yourname.pdftoolkit.ui.components.HistorySidebar
 import com.yourname.pdftoolkit.ui.screens.PdfViewerScreen
 import com.yourname.pdftoolkit.ui.screens.*
