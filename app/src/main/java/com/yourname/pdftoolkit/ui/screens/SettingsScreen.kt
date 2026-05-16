@@ -26,8 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.yourname.familypdf.BuildConfig
-import com.yourname.pdftoolkit.ui.components.LicensesDialog
+import com.familypdf.app.BuildConfig com.yourname.pdftoolkit.ui.components.LicensesDialog
 import com.yourname.pdftoolkit.util.CacheManager
 import com.yourname.pdftoolkit.util.ThemeManager
 import com.yourname.pdftoolkit.util.ThemeMode
