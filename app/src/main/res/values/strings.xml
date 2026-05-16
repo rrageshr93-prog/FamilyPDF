@@ -1,9 +1,52 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- App Identity -->
     <string name="app_name">FamilyPDF</string>
-    <string name="app_name_full">FamilyPDF</string>
-    
-    <string name="made_with">Made with ❤️ by RR</string>
-    <string name="app_description">Free offline PDF editor for the family</string>
-    <string name="app_mission">Simple, private, and always free.</string>
+    <string name="app_tagline">Your family\'s private PDF toolkit</string>
+    <string name="made_by">Made with ❤️ by RR</string>
+
+    <!-- Home Screen -->
+    <string name="home_title">FamilyPDF</string>
+    <string name="home_subtitle">What would you like to do?</string>
+
+    <!-- Tools -->
+    <string name="tool_view">View PDF</string>
+    <string name="tool_merge">Merge PDFs</string>
+    <string name="tool_split">Split PDF</string>
+    <string name="tool_compress">Compress PDF</string>
+    <string name="tool_sign">Sign Document</string>
+    <string name="tool_fill">Fill Form</string>
+    <string name="tool_annotate">Annotate</string>
+    <string name="tool_ocr">Scan to Text (OCR)</string>
+    <string name="tool_rotate">Rotate Pages</string>
+    <string name="tool_reorder">Reorder Pages</string>
+
+    <!-- About Screen -->
+    <string name="about_title">About FamilyPDF</string>
+    <string name="about_version">Version</string>
+    <string name="about_description">A free, fully offline PDF toolkit built for family use. No internet. No trackers. No ads. Ever.</string>
+    <string name="about_license">Open Source · Apache 2.0</string>
+    <string name="about_privacy">100% Private — nothing leaves your device</string>
+    <string name="about_source">Source Code</string>
+    <string name="about_source_url">https://github.com/rrageshr93-prog/FamilyPDF</string>
+
+    <!-- Super-Detect Banner (PDF Viewer) -->
+    <string name="superdetect_label">Super-Detect</string>
+    <string name="superdetect_on">ON</string>
+    <string name="superdetect_off">OFF</string>
+    <string name="superdetect_tooltip">Auto-detects forms, signatures &amp; fillable fields</string>
+
+    <!-- Common Actions -->
+    <string name="action_open">Open</string>
+    <string name="action_save">Save</string>
+    <string name="action_share">Share</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_done">Done</string>
+    <string name="action_back">Back</string>
+
+    <!-- Messages -->
+    <string name="msg_no_files">No PDFs yet — tap + to get started</string>
+    <string name="msg_saved">Saved successfully</string>
+    <string name="msg_processing">Processing…</string>
+    <string name="msg_error_generic">Something went wrong. Please try again.</string>
 </resources>
