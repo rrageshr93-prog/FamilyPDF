@@ -5,10 +5,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(navController: NavController) {
     Scaffold(
@@ -17,58 +17,61 @@ fun HomeScreen(navController: NavController) {
                 title = { Text("FamilyPDF") }
             )
         }
-    ) { paddingValues ->
+    ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
+                .padding(innerPadding)
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             Text(
                 text = "FamilyPDF",
-                style = MaterialTheme.typography.headlineLarge
+                style = MaterialTheme.typography.headlineLarge,
+                textAlign = TextAlign.Center
             )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
             Text(
                 text = "Made with ❤️ by RR",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.primary
             )
-
+            
             Text(
-                text = "For my family",
-                style = MaterialTheme.typography.bodyMedium
+                text = "For my family • Always free & private",
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(48.dp))
+            Spacer(modifier = Modifier.height(50.dp))
 
+            // Main Buttons
             Button(
                 onClick = { navController.navigate("pdf_viewer") },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
-                Text("📄 Open a PDF", style = MaterialTheme.typography.titleMedium)
+                Text("📄 Open & Edit PDF", style = MaterialTheme.typography.titleMedium)
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             Button(
                 onClick = { navController.navigate("tools") },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
-                Text("🛠️ Tools", style = MaterialTheme.typography.titleMedium)
+                Text("🛠️ All Tools", style = MaterialTheme.typography.titleMedium)
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             OutlinedButton(
                 onClick = { navController.navigate("sign") },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
-                Text("✍️ Sign a Document")
+                Text("✍️ Sign Document")
             }
         }
     }
