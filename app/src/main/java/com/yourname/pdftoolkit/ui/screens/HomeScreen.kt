@@ -5,12 +5,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun HomeScreen(navController: NavController) {
 @Composable
 fun HomeScreen(navController: NavController) {
     Scaffold(
@@ -32,15 +30,15 @@ fun HomeScreen(navController: NavController) {
                 text = "FamilyPDF",
                 style = MaterialTheme.typography.headlineLarge
             )
-            
+
             Spacer(modifier = Modifier.height(8.dp))
-            
+
             Text(
                 text = "Made with ❤️ by RR",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary
             )
-            
+
             Text(
                 text = "For my family",
                 style = MaterialTheme.typography.bodyMedium
@@ -48,7 +46,6 @@ fun HomeScreen(navController: NavController) {
 
             Spacer(modifier = Modifier.height(48.dp))
 
-            // Main Action Buttons - Big and Family Friendly
             Button(
                 onClick = { navController.navigate("pdf_viewer") },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
