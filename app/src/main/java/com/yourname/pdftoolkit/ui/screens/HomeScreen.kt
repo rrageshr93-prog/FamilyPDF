@@ -26,6 +26,8 @@ fun HomeScreen(navController: NavController) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
+            Spacer(modifier = Modifier.height(20.dp))
+
             Text(
                 text = "FamilyPDF",
                 style = MaterialTheme.typography.headlineLarge,
@@ -46,13 +48,14 @@ fun HomeScreen(navController: NavController) {
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(50.dp))
+            Spacer(modifier = Modifier.height(60.dp))
 
+            // Main Buttons
             Button(
                 onClick = { navController.navigate("pdf_viewer") },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
-                Text("📄 Open & Edit PDF", style = MaterialTheme.typography.titleMedium)
+                Text("📄 Open & Edit PDF")
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -61,7 +64,7 @@ fun HomeScreen(navController: NavController) {
                 onClick = { navController.navigate("tools") },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
             ) {
-                Text("🛠️ All Tools", style = MaterialTheme.typography.titleMedium)
+                Text("🛠️ All Tools")
             }
 
             Spacer(modifier = Modifier.height(16.dp))
