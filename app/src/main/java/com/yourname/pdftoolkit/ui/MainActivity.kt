@@ -76,7 +76,7 @@ class MainActivity : FragmentActivity() {
         Log.d(TAG, "onCreate: After handleIntent, pendingPdfUri=$pendingPdfUri, pendingPdfName=$pendingPdfName, pendingIsLoading=$pendingIsLoading")
         
         setContent {
-            PDFToolkitTheme {
+            FamilyPDFTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
