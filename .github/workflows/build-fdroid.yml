@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'Version name (e.g., 1.0.0)'
+        description: 'Version name (e.g. 1.0.0)'
         required: false
         default: '1.0.0'
       version_code:
-        description: 'Version code (e.g., 1)'
+        description: 'Version code (e.g. 1)'
         required: false
         default: '1'
 
@@ -39,17 +39,11 @@ jobs:
           echo "APP_VERSION_NAME=${{ github.event.inputs.version_name }}" >> $GITHUB_ENV
 
       - name: Build F-Droid Debug APK
-        env:
-          APP_VERSION_CODE: ${{ env.APP_VERSION_CODE }}
-          APP_VERSION_NAME: ${{ env.APP_VERSION_NAME }}
-        run: ./gradlew generateFdroidDebugBuildConfig assembleFdroidDebug --rerun-tasks
-
-      - name: Find APK
-        run: find app/build/outputs -name "*.apk" -type f
+        run: ./gradlew assembleFdroidDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: FamilyPDF-fdroid-v${{ env.APP_VERSION_NAME }}
-          path: app/build/outputs/
+          path: app/build/outputs/apk/fdroid/debug/*.apk
           retention-days: 30
