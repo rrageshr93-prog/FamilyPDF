@@ -42,7 +42,7 @@ jobs:
         env:
           APP_VERSION_CODE: ${{ env.APP_VERSION_CODE }}
           APP_VERSION_NAME: ${{ env.APP_VERSION_NAME }}
-        run: ./gradlew assembleFdroidDebug
+        run: ./gradlew generateFdroidDebugBuildConfig assembleFdroidDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
