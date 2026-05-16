@@ -13,8 +13,13 @@ import androidx.navigation.NavController
 fun HomeScreen(navController: NavController) {
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("FamilyPDF") }
+            CenterAlignedTopAppBar(
+                title = { 
+                    Text(
+                        text = "FamilyPDF",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                }
             )
         }
     ) { innerPadding ->
@@ -48,7 +53,6 @@ fun HomeScreen(navController: NavController) {
 
             Spacer(modifier = Modifier.height(50.dp))
 
-            // Main Buttons
             Button(
                 onClick = { navController.navigate("pdf_viewer") },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
