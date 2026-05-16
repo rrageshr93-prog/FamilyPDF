@@ -21,7 +21,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
 import com.yourname.pdftoolkit.data.SafUriManager
 import com.yourname.pdftoolkit.ui.navigation.AppNavigation
-import com.yourname.pdftoolkit.ui.theme.PDFToolkitTheme
+import com.yourname.pdftoolkit.ui.theme.FamilyPDFTheme
 import com.yourname.pdftoolkit.util.CacheManager
 import com.yourname.pdftoolkit.util.RatingManager
 import com.yourname.pdftoolkit.util.ReviewHelper
