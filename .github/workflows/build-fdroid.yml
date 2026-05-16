@@ -42,7 +42,7 @@ jobs:
         env:
           APP_VERSION_CODE: ${{ env.APP_VERSION_CODE }}
           APP_VERSION_NAME: ${{ env.APP_VERSION_NAME }}
-        run: ./gradlew generateFdroidDebugBuildConfig assembleFdroidDebug
+        run: ./gradlew generateFdroidDebugBuildConfig assembleFdroidDebug --rerun-tasks
 
       - name: Find APK
         run: find app/build/outputs -name "*.apk" -type f
